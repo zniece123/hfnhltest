@@ -28,15 +28,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['can_manage_draft']   = !empty($user['can_manage_draft']);
         $_SESSION['is_fa_committee']    = !empty($user['is_fa_committee']);
 
-        if (!empty($user['is_commish'])) {
-            $dest = 'commish_hub.php';
-        } elseif ($user['team_id']) {
-            $dest = 'lines.php?id=' . (int)$user['team_id'];
-        } else {
-            $dest = 'index.php';
-        }
-
-        header('Location: ' . $dest);
+        header('Location: index.php');
         exit;
     } else {
         $error = 'Invalid username or password.';
@@ -75,4 +67,5 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </div>
 </body>
 </html>
+
 
