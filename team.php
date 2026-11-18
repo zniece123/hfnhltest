@@ -303,12 +303,51 @@ $tStmt->execute(array($team_id));
 $team = $tStmt->fetch(PDO::FETCH_ASSOC);
 if (!$team) die("Team not found.");
 
+$ahlAffiliates = array(
+        'ANA' => 'San Diego Gulls',            'BOS' => 'Providence Bruins',
+        'BUF' => 'Rochester Americans',        'CGY' => 'Calgary Wranglers',
+        'CAR' => 'Chicago Wolves',             'CHI' => 'Rockford IceHogs',
+        'COL' => 'Colorado Eagles',            'CBJ' => 'Cleveland Monsters',
+        'DAL' => 'Texas Stars',                'DET' => 'Grand Rapids Griffins',
+        'EDM' => 'Bakersfield Condors',        'FLA' => 'Charlotte Checkers',
+        'LAK' => 'Ontario Reign',              'MIN' => 'Iowa Wild',
+        'MTL' => 'Laval Rocket',               'NSH' => 'Milwaukee Admirals',
+        'NJD' => 'Utica Comets',               'NYI' => 'Bridgeport Islanders',
+        'NYR' => 'Hartford Wolf Pack',         'OTT' => 'Belleville Senators',
+        'PHI' => 'Lehigh Valley Phantoms',     'PIT' => 'Wilkes-Barre/Scranton Penguins',
+        'SJS' => 'San Jose Barracuda',         'SEA' => 'Coachella Valley Firebirds',
+        'STL' => 'Springfield Thunderbirds',   'TBL' => 'Syracuse Crunch',
+        'TOR' => 'Toronto Marlies',            'UTA' => 'Tucson Roadrunners',
+        'VAN' => 'Abbotsford Canucks',         'VGK' => 'Henderson Silver Knights',
+        'WSH' => 'Hershey Bears',              'WPG' => 'Manitoba Moose'
+);
+
+$teamColors = array(
+        'ANA' => array('#F47A38', '#B9975B'), 'BOS' => array('#FFB81C', '#111111'),
+        'BUF' => array('#003087', '#FFB81C'), 'CAR' => array('#CE1126', '#111111'),
+        'CBJ' => array('#002654', '#CE1126'), 'CGY' => array('#D2001C', '#FAAF19'),
+        'CHI' => array('#CF0A2C', '#111111'), 'COL' => array('#6F263D', '#236192'),
+        'DAL' => array('#006847', '#111111'), 'DET' => array('#CE1126', '#1e293b'),
+        'EDM' => array('#041E42', '#FF4C00'), 'FLA' => array('#041E42', '#C8102E'),
+        'LAK' => array('#111111', '#A2AAAD'), 'MIN' => array('#154734', '#A6192E'),
+        'MTL' => array('#AF1E2D', '#192168'), 'NJD' => array('#CE1126', '#111111'),
+        'NSH' => array('#FFB81C', '#041E42'), 'NYI' => array('#00539B', '#F47D30'),
+        'NYR' => array('#0038A8', '#CE1126'), 'OTT' => array('#DA1A32', '#111111'),
+        'PHI' => array('#F74902', '#111111'), 'PIT' => array('#FCB514', '#111111'),
+        'SEA' => array('#001628', '#99D9D9'), 'SJS' => array('#006D75', '#EA7200'),
+        'STL' => array('#002F87', '#FCB514'), 'TBL' => array('#002868', '#1e293b'),
+        'TOR' => array('#00205B', '#1e293b'), 'UTA' => array('#69B3E7', '#111111'),
+        'VAN' => array('#00205B', '#00843D'), 'VGK' => array('#333F42', '#B4975A'),
+        'WPG' => array('#041E42', '#004C97'), 'WSH' => array('#041E42', '#C8102E')
+);
+
 $abbr    = strtoupper(trim($team['abbreviation'] ?? ''));
 $nhlName = $team['name'] ?? 'NHL Team';
-$ahlName = $team['ahl_affiliate'] ?? ($team['farm_team'] ?? 'AHL Affiliate');
+$ahlName = $ahlAffiliates[$abbr] ?? ($team['ahl_affiliate'] ?? 'AHL Affiliate');
 $gmName  = $team['gm_name'] ?? 'Vacant';
-$c1      = $team['primary_color'] ?? '#0284c7';
-$c2      = $team['secondary_color'] ?? '#38bdf8';
+$c1      = $teamColors[$abbr] ?? ($team['primary_color'] ?? '#0284c7');
+$c2      = $teamColors[$abbr] ?? ($team['secondary_color'] ?? '#38bdf8');
+
 
 $gmUserStmt = $pdo->prepare("SELECT username FROM users WHERE team_id = ? LIMIT 1");
 $gmUserStmt->execute(array($team_id));
@@ -964,10 +1003,10 @@ $isCommishUser = (!empty($_SESSION['is_commish']) || !empty($_SESSION['is_admin'
 <?php endif; ?>
 
 <h2 style="margin-top:28px; color:#38bdf8;">
-    Prospects List (<?= count($teamProspects) ?>
+    Prospects List (<?= count($teamProspects) ?>)
 </h2>
 
-<?php if (empty($teamProspects)): ?>)
+<?php if (empty($teamProspects)): ?>
     <div style="background:#1e293b; padding:14px 16px; border-radius:8px; border:1px solid #334155; color:#94a3b8;">
         No drafted prospects currently listed for this team.
     </div>
