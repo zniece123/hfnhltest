@@ -151,6 +151,7 @@ try {
         <div class="nav-drop-menu">
             <a href="standings.php">Standings</a>
             <a href="schedule.php">Scores &amp; Schedule</a>
+            <a href="leaders.php">Stats</a>
         </div>
     </div>
 
