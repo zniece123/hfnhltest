@@ -16,7 +16,6 @@ $partnerId        = isset($_GET['partner']) ? (int)$_GET['partner'] : 0;
 $counterId        = isset($_GET['counter']) ? (int)$_GET['counter'] : 0;
 $msg              = '';
 
-// 1. PROPOSE OR COUNTER A TRADE
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'propose') {
     $recTeamId      = (int)($_POST['receiving_team_id'] ?? 0);
     $counterTradeId = (int)($_POST['counter_trade_id'] ?? 0);
@@ -73,7 +72,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'propo
     }
 }
 
-// 2. RECEIVING / PROPOSING GM ACTIONS
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['action'] ?? '', array('accept_gm', 'decline_gm', 'cancel_gm'))) {
     $tid = (int)$_POST['trade_id'];
     $act = $_POST['action'];
@@ -102,7 +100,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['action'] ?? '', ar
     }
 }
 
-// 3. TRADE COMMITTEE / COMMISH APPROVAL (BLOCKS SELF-APPROVAL)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isTradeCommittee && ($_POST['action'] ?? '') === 'approve_commish') {
     $tid = (int)$_POST['trade_id'];
     $chk = $pdo->prepare("
@@ -159,7 +156,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isTradeCommittee && ($_POST['actio
     $msg = "Trade #{$tid} declined by Trade Committee.";
 }
 
-// 4. MAPS & FORMATTERS
 $playerMap = array();
 foreach ($pdo->query("SELECT player_id, first_name, last_name, position, overall_rating FROM players") as $p) {
     $playerMap[$p['player_id']] = "{$p['first_name']} {$p['last_name']} ({$p['position']} {$p['overall_rating']})";
@@ -187,7 +183,6 @@ function formatAssetList($pgPlayerArr, $pgPickArr, $playerMap, $pickMap) {
     return empty($out) ? '<em>None</em>' : implode('<br>', $out);
 }
 
-// 5. PRE-FILL DATA IF COUNTERING AN EXISTING TRADE
 $preOfferPlayers = array();
 $preReqPlayers   = array();
 $preOfferPicks   = array();
@@ -211,7 +206,6 @@ if ($counterId > 0 && $myTeamId > 0) {
     }
 }
 
-// 6. FETCH ROSTERS, UNUSED PICKS, AND AUTHORIZED TRADES
 $allTeams = $pdo->query("SELECT team_id, name FROM teams ORDER BY name")->fetchAll();
 $myRoster = $myTeamId > 0 ? $pdo->query("SELECT player_id, first_name, last_name, position, overall_rating FROM players WHERE team_id = {$myTeamId} ORDER BY overall_rating DESC")->fetchAll() : array();
 $partnerRoster = $partnerId > 0 ? $pdo->query("SELECT player_id, first_name, last_name, position, overall_rating FROM players WHERE team_id = {$partnerId} ORDER BY overall_rating DESC")->fetchAll() : array();

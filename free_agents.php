@@ -13,7 +13,6 @@ $canOffer   = ($userTeamId > 0 || $isCommish || $isFaComm);
 $msg        = '';
 $alertType  = 'info';
 
-// Fetch league phase and signing deadline
 $currentPhase = 'REGULAR_SEASON';
 $faDeadline   = '';
 try {
@@ -25,7 +24,6 @@ try {
 $deadlineTs     = ($faDeadline !== '') ? strtotime($faDeadline) : false;
 $isBiddingPhase = ($deadlineTs !== false && time() < $deadlineTs);
 
-// Helper to finalize an unmatched RFA Offer Sheet (signs player to offering team + transfers own draft picks)
 $finalizeUnmatchedRfa = function(array $bidRow) use ($pdo) {
     $bidId      = (int)$bidRow['bid_id'];
     $pid        = (int)$bidRow['player_id'];
@@ -53,7 +51,6 @@ $finalizeUnmatchedRfa = function(array $bidRow) use ($pdo) {
     return $transfer['label'] ?? 'None';
 };
 
-// Auto-process any expired 7-day RFA Match windows on page load
 try {
     $expiredMatches = $pdo->query("
         SELECT b.*, p.prev_team_id
@@ -75,7 +72,6 @@ try {
     if ($pdo->inTransaction()) $pdo->rollBack();
 }
 
-// Handle Rights-Holding Team Match or Decline Action
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') === 'rfa_match_decision') {
     $bidId    = (int)($_POST['bid_id'] ?? 0);
     $decision = $_POST['decision'] ?? '';
@@ -96,7 +92,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') ==
         if ($userTeamId === $rightsTid || $isCommish) {
             $pdo->beginTransaction();
             if ($decision === 'match') {
-                // Rights-holding team matches exact AAV and term
                 $pdo->prepare("
                     UPDATE players
                     SET team_id        = ?,
@@ -128,7 +123,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') ==
     }
 }
 
-// Handle Placing / Updating a Bid on a Free Agent
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') === 'place_fa_bid' && $canOffer) {
     $pid        = (int)($_POST['player_id'] ?? 0);
     $years      = max(1, min(7, (int)($_POST['contract_years'] ?? 1)));
@@ -183,7 +177,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') ==
     }
 }
 
-// Fetch active MATCH_PENDING RFA Offer Sheets
 $pendingMatches = $pdo->query("
     SELECT b.*, p.first_name, p.last_name, p.position, p.overall_rating, p.prev_team_id,
            offer_t.abbreviation AS offer_abbr, offer_t.name AS offer_team_name,

@@ -152,6 +152,7 @@ try {
             <a href="standings.php">Standings</a>
             <a href="schedule.php">Scores &amp; Schedule</a>
             <a href="leaders.php">Stats</a>
+            <a href="draft_order.php">Draft Order</a
         </div>
     </div>
 
