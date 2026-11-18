@@ -150,8 +150,9 @@ $myTeamId         = (int)($_SESSION['team_id'] ?? 0);
             margin-bottom: 18px;
         }
         .score-card {
-            background: rgba(15, 23, 42, 0.92);
+            background: rgba(15, 23, 42, 0.94);
             border: 1px solid #2b4570;
+            border-top: 3px solid #0284c7;
             border-radius: 8px;
             padding: 8px 12px;
             min-width: 148px;
@@ -161,8 +162,17 @@ $myTeamId         = (int)($_SESSION['team_id'] ?? 0);
             transition: border-color 0.15s, transform 0.15s;
         }
         .score-card:hover {
-            border-color: #38bdf8;
+            border-color: #ef4444;
             transform: translateY(-1px);
+        }
+        .sc-final-pill {
+            background: rgba(220, 38, 38, 0.2);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.45);
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-size: 0.92em;
+            letter-spacing: 0.4px;
         }
         .sc-top {
             display: flex;
@@ -191,6 +201,8 @@ $myTeamId         = (int)($_SESSION['team_id'] ?? 0);
         .portal-hero {
             background: linear-gradient(125deg, #0c2340 0%, #0f172a 55%, #1e1b4b 100%);
             border: 1px solid #2b4570;
+            border-top: 4px solid #0284c7;
+            border-bottom: 3px solid #dc2626;
             border-radius: 12px;
             padding: 22px 28px;
             margin-bottom: 22px;
@@ -254,8 +266,9 @@ $myTeamId         = (int)($_SESSION['team_id'] ?? 0);
             .home-grid { grid-template-columns: 1fr; }
         }
         .panel {
-            background: rgba(30, 41, 59, 0.88);
+            background: rgba(30, 41, 59, 0.9);
             border: 1px solid #334155;
+            border-top: 3px solid #0284c7;
             border-radius: 12px;
             padding: 20px 22px;
             margin-bottom: 22px;
@@ -265,7 +278,7 @@ $myTeamId         = (int)($_SESSION['team_id'] ?? 0);
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid #334155;
+            border-bottom: 2px solid #dc2626;
             padding-bottom: 10px;
             margin-bottom: 16px;
         }
@@ -355,6 +368,17 @@ $myTeamId         = (int)($_SESSION['team_id'] ?? 0);
             text-decoration: none;
         }
         .panel-footer-link:hover { text-decoration: underline; }
+
+        .q-btn.goal {
+            background: rgba(220, 38, 38, 0.16);
+            color: #fca5a5;
+            border: 1px solid rgba(239, 68, 68, 0.45);
+        }
+        .q-btn.goal:hover {
+            background: #dc2626;
+            color: #ffffff;
+            border-color: #ef4444;
+        }
     </style>
 </head>
 <body>
@@ -369,7 +393,7 @@ $myTeamId         = (int)($_SESSION['team_id'] ?? 0);
             ?>
             <a class="score-card" href="boxscore.php?id=<?= (int)$tg['game_id'] ?>">
                 <div class="sc-top">
-                    <span>FINAL</span>
+                    <span class="sc-final-pill">FINAL</span>
                     <span><?= date('M j', strtotime($tg['game_date'])) ?></span>
                 </div>
                 <div class="sc-row">
@@ -395,11 +419,11 @@ $myTeamId         = (int)($_SESSION['team_id'] ?? 0);
                 <a class="q-btn" href="lines.php">Line Editor</a>
                 <a class="q-btn" href="contracts.php">Contract Center</a>
                 <a class="q-btn" href="standings.php">Standings</a>
-                <a class="q-btn gold" href="waivers.php">Waiver Wire<?= $activeWaiverCnt > 0 ? " ({$activeWaiverCnt})" : '' ?></a>
+                <a class="q-btn goal" href="waivers.php">Waiver Wire<?= $activeWaiverCnt > 0 ? " ({$activeWaiverCnt})" : '' ?></a>
             <?php else: ?>
                 <a class="q-btn" href="standings.php">League Standings</a>
                 <a class="q-btn" href="schedule.php">Scores &amp; Schedule</a>
-                <a class="q-btn gold" href="waivers.php">Waiver Wire</a>
+                <a class="q-btn goal" href="waivers.php">Waiver Wire</a>
             <?php endif; ?>
         </div>
     </div>
