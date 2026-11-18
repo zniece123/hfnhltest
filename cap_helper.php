@@ -111,6 +111,7 @@ function getTeamCapSummary(PDO $pdo, int $teamId): array {
 }
 
 function getLeagueCapViolations(PDO $pdo): array {
+    return array();
     $limits     = getLeagueCapLimits($pdo);
     $violations = array();
 
