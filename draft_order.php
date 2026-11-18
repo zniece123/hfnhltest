@@ -2,6 +2,15 @@
 require 'db.php';
 /** @var PDO $pdo */
 
+$selectedYear  = isset($_GET['year']) ? (int)$_GET['year'] : 2027;
+if (!in_array($selectedYear, array(2027, 2028, 2029, 2030, 2031))) {
+    $selectedYear = 2027;
+}
+$selectedRound = isset($_GET['round']) ? (int)$_GET['round'] : 1;
+if ($selectedRound < 1 || $selectedRound > 7) {
+    $selectedRound = 1;
+}
+
 $nhlAlign = array(
     'BOS' => array('Eastern', 'Atlantic'),     'BUF' => array('Eastern', 'Atlantic'),
     'DET' => array('Eastern', 'Atlantic'),     'FLA' => array('Eastern', 'Atlantic'),
@@ -38,7 +47,7 @@ foreach ($teams as $t) {
     $pair = $nhlAlign[$abbr] ?? array('Eastern', 'Atlantic');
     $stats[$tid] = array(
         'team_id' => $tid, 'name' => $t['name'], 'abbr' => $abbr,
-        'conf' => $pair[0], 'div' => $pair[1],
+        'conf' => reset($pair), 'div' => end($pair),
         'gp' => 0, 'w' => 0, 'l' => 0, 'otl' => 0, 'pts' => 0, 'gf' => 0, 'ga' => 0, 'diff' => 0,
         'is_playoff' => false, 'seed_label' => ''
     );
@@ -116,25 +125,16 @@ usort($playoffTeams, $cmpWorstFirst);
 $draftOrder = array_merge($lotteryTeams, $playoffTeams);
 
 $pickOwners = array();
-try {
-    $chk = $pdo->query("SELECT to_regclass('public.draft_picks')")->fetchColumn();
-    if ($chk) {
-        $dpRows = $pdo->query("
-            SELECT dp.original_team_id, dp.current_team_id, t.abbreviation AS owner_abbr, t.name AS owner_name
-            FROM draft_picks dp
-            JOIN teams t ON dp.current_team_id = t.team_id
-            WHERE dp.round = 1
-            ORDER BY dp.draft_year ASC
-        ")->fetchAll(PDO::FETCH_ASSOC);
-        foreach ($dpRows as $dp) {
-            $origId = (int)$dp['original_team_id'];
-            if (!isset($pickOwners[$origId])) {
-                $pickOwners[$origId] = $dp;
-            }
-        }
-    }
-} catch (Exception $e) {
-
+$dpStmt = $pdo->prepare("
+    SELECT dp.original_team_id, dp.current_team_id, dp.conditions,
+           t.abbreviation AS owner_abbr, t.name AS owner_name
+    FROM draft_picks dp
+    JOIN teams t ON dp.current_team_id = t.team_id
+    WHERE dp.draft_year = ? AND dp.round_num = ?
+");
+$dpStmt->execute(array($selectedYear, $selectedRound));
+foreach ($dpStmt->fetchAll(PDO::FETCH_ASSOC) as $dp) {
+    $pickOwners[(int)$dp['original_team_id']] = $dp;
 }
 
 ?>
@@ -144,9 +144,12 @@ try {
     <meta charset="UTF-8">
     <title>HFNHL Draft Order &amp; Lottery Odds</title>
     <style>
-        body { font-family: Arial, sans-serif; background: #0f172a; color: #f8fafc; padding: 14px 20px; max-width: 1150px; margin: auto; }
+        body { font-family: Arial, sans-serif; background: #0f172a; color: #f8fafc; padding: 14px 20px; }
         h1 { color: #38bdf8; margin-bottom: 6px; }
-        .subtitle { color: #94a3b8; font-size: 0.92em; margin-bottom: 20px; }
+        .subtitle { color: #94a3b8; font-size: 0.92em; margin-bottom: 18px; }
+        .filter-bar { background: #1e293b; padding: 12px 16px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 18px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+        .filter-bar label { color: #94a3b8; font-weight: bold; font-size: 0.9em; }
+        .filter-bar select { background: #0f172a; color: #f8fafc; border: 1px solid #334155; padding: 6px 12px; border-radius: 5px; font-weight: bold; }
         table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; margin-bottom: 24px; }
         th, td { padding: 10px 12px; border-bottom: 1px solid #334155; font-size: 0.92em; }
         th { background: #020617; color: #38bdf8; text-align: left; }
@@ -159,24 +162,44 @@ try {
         .team-cell img { width: 26px; height: 26px; object-fit: contain; }
         .odds-pill { background: rgba(56, 189, 248, 0.14); color: #38bdf8; padding: 2px 8px; border-radius: 12px; font-weight: bold; font-size: 0.85em; }
         .po-pill { background: #14532d; color: #86efac; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
-        .traded-pill { background: rgba(251, 191, 36, 0.15); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.4); padding: 2px 8px; border-radius: 4px; font-size: 0.82em; font-weight: bold; display: inline-flex; align-items: center; gap: 5px; }
-        .traded-pill img { width: 16px; height: 16px; object-fit: contain; }
+        .traded-pill { background: rgba(251, 191, 36, 0.15); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.45); padding: 3px 9px; border-radius: 5px; font-size: 0.84em; font-weight: bold; display: inline-flex; align-items: center; gap: 6px; }
+        .traded-pill img { width: 18px; height: 18px; object-fit: contain; }
+        .cond-note { display: block; color: #fde047; font-size: 0.78em; margin-top: 3px; font-style: italic; }
     </style>
 </head>
 <body>
 <?php include 'header.php'; ?>
 
-<h1>HFNHL Live Draft Order</h1>
+<h1><?= $selectedYear ?> HFNHL Draft Order &mdash; Round <?= $selectedRound ?></h1>
 <div class="subtitle">
-    Picks 1&ndash;16 are non-playoff teams ordered by lowest points / points percentage with NHL Draft Lottery #1 pick odds. Picks 17&ndash;32 are current playoff teams.
+    Slots 1&ndash;16 are non-playoff teams ordered by lowest points / points percentage<?= $selectedRound === 1 ? ' with NHL Draft Lottery #1 pick odds' : '' ?>. Slots 17&ndash;32 are current playoff teams.
 </div>
+
+<form method="GET" class="filter-bar">
+    <div>
+        <label for="year">Draft Year:</label>
+        <select name="year" id="year" onchange="this.form.submit()">
+            <?php foreach (array(2027, 2028, 2029, 2030, 2031) as $yr): ?>
+                <option value="<?= $yr ?>" <?= $selectedYear === $yr ? 'selected' : '' ?>><?= $yr ?> Draft</option>
+            <?php endforeach; ?>
+        </select>
+    </div>
+    <div>
+        <label for="round">Round:</label>
+        <select name="round" id="round" onchange="this.form.submit()">
+            <?php for ($rd = 1; $rd <= 7; $rd++): ?>
+                <option value="<?= $rd ?>" <?= $selectedRound === $rd ? 'selected' : '' ?>>Round <?= $rd ?></option>
+            <?php endfor; ?>
+        </select>
+    </div>
+</form>
 
 <table>
     <tr>
-        <th class="num" style="width:60px;">Pick</th>
-        <th>Team</th>
-        <th>Pick Ownership</th>
-        <th class="num">Status / Odds</th>
+        <th class="num" style="width:65px;">Pick</th>
+        <th>Original Team (Standings Slot)</th>
+        <th>Current Pick Owner</th>
+        <th class="num"><?= $selectedRound === 1 ? 'Lottery Odds / Status' : 'Playoff Status' ?></th>
         <th class="num">GP</th>
         <th class="num">W-L-OTL</th>
         <th class="num">PTS</th>
@@ -184,17 +207,22 @@ try {
         <th class="num">DIFF</th>
     </tr>
     <?php foreach ($draftOrder as $idx => $r):
-        $pickNum = $idx + 1;
-        $tid     = $r['team_id'];
-        $pctStr  = $r['gp'] > 0 ? number_format($r['ptspct'], 3) : '.000';
-        $diffStr = ($r['diff'] > 0 ? '+' : '') . $r['diff'];
-        $rowCls  = ($pickNum === 16) ? ' class="cutoff-row"' : '';
+        $pickNum   = $idx + 1;
+        $overall   = (($selectedRound - 1) * 32) + $pickNum;
+        $tid       = $r['team_id'];
+        $pctStr    = $r['gp'] > 0 ? number_format($r['ptspct'], 3) : '.000';
+        $diffStr   = ($r['diff'] > 0 ? '+' : '') . $r['diff'];
+        $rowCls    = ($pickNum === 16) ? ' class="cutoff-row"' : '';
 
         $ownerInfo = $pickOwners[$tid] ?? null;
         $isTraded  = ($ownerInfo && (int)$ownerInfo['current_team_id'] !== $tid);
+        $condText  = trim($ownerInfo['conditions'] ?? '');
         ?>
         <tr<?= $rowCls ?>>
-            <td class="num pick-num">#<?= $pickNum ?></td>
+            <td class="num pick-num">
+                #<?= $overall ?>
+                <div style="font-size:0.72em;color:#94a3b8;font-weight:normal;">R<?= $selectedRound ?>-<?= $pickNum ?></div>
+            </td>
             <td>
                 <a class="team-cell" href="team.php?id=<?= $tid ?>">
                     <img src="logos/<?= htmlspecialchars($r['abbr']) ?>.svg" alt="">
@@ -205,17 +233,26 @@ try {
                 <?php if ($isTraded):
                     $ownAbbr = strtoupper(trim($ownerInfo['owner_abbr']));
                     ?>
-                    <span class="traded-pill">
-                        <img src="logos/<?= htmlspecialchars($ownAbbr) ?>.svg" alt="">
-                        Via <?= htmlspecialchars($r['abbr']) ?> &rarr; Owned by <?= htmlspecialchars($ownAbbr) ?>
-                    </span>
+                    <a href="team.php?id=<?= (int)$ownerInfo['current_team_id'] ?>" style="text-decoration:none;">
+                        <span class="traded-pill">
+                            <img src="logos/<?= htmlspecialchars($ownAbbr) ?>.svg" alt="">
+                            Owned by <?= htmlspecialchars($ownAbbr) ?> (via <?= htmlspecialchars($r['abbr']) ?>)
+                        </span>
+                    </a>
                 <?php else: ?>
-                    <span style="color:#94a3b8;font-size:0.88em;">Own Pick</span>
+                    <span style="color:#94a3b8;font-size:0.88em;">Own Pick (<?= htmlspecialchars($r['abbr']) ?>)</span>
+                <?php endif; ?>
+                <?php if ($condText !== ''): ?>
+                    <span class="cond-note">&#9888; <?= htmlspecialchars($condText) ?></span>
                 <?php endif; ?>
             </td>
             <td class="num">
                 <?php if ($pickNum <= 16): ?>
-                    <span class="odds-pill"><?= $lotteryOdds[$pickNum] ?></span>
+                    <?php if ($selectedRound === 1): ?>
+                        <span class="odds-pill"><?= $lotteryOdds[$pickNum] ?></span>
+                    <?php else: ?>
+                        <span style="color:#94a3b8;font-size:0.85em;">Non-Playoff</span>
+                    <?php endif; ?>
                 <?php else: ?>
                     <span class="po-pill">Playoffs (<?= htmlspecialchars($r['seed_label']) ?>)</span>
                 <?php endif; ?>
@@ -231,4 +268,5 @@ try {
 
 </body>
 </html>
+
 
