@@ -154,6 +154,7 @@ try {
             <a href="leaders.php">Stats</a>
             <a href="draft_order.php">Draft Order</a>
             <a href="injuries.php">Injury Report</a>
+            <a href="playoffs.php">Playoffs</a>
         </div>
     </div>
 
@@ -201,6 +202,10 @@ try {
                         <a href="commish_hub.php" style="color:#fbbf24;">Commish Hub ★</a>
                     <?php endif; ?>
                     <a href="import_draft.php">Draft Importer</a>
+                    <a href="playoffs.php">Sim Center &amp; Playoffs</a>
+                    <a href="import_nhl_schedule.php">Import 84-Game Schedule</a>
+                    <a href="create_player.php">Create Rookie / Player</a>
+                    <a href="update_ratings.php">Ratings Updater</a>
                 </div>
             </div>
         <?php endif; ?>
