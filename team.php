@@ -963,9 +963,8 @@ $isCommishUser = (!empty($_SESSION['is_commish']) || !empty($_SESSION['is_admin'
 </div>
 <?php endif; ?>
 
-
-<<h2 style="margin-top:28px; color:#38bdf8;">
-    Prospects List (<?= count($teamProspects) ?>)
+<h2 style="margin-top:28px; color:#38bdf8;">
+    Prospects List (<?= count($teamProspects) ?>
 </h2>
 
 <?php if (empty($teamProspects)): ?>
