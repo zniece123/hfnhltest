@@ -967,7 +967,7 @@ $isCommishUser = (!empty($_SESSION['is_commish']) || !empty($_SESSION['is_admin'
     Prospects List (<?= count($teamProspects) ?>
 </h2>
 
-<?php if (empty($teamProspects)): ?>
+<?php if (empty($teamProspects)): ?>)
     <div style="background:#1e293b; padding:14px 16px; border-radius:8px; border:1px solid #334155; color:#94a3b8;">
         No drafted prospects currently listed for this team.
     </div>
