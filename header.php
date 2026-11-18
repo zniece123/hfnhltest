@@ -153,6 +153,7 @@ try {
             <a href="schedule.php">Scores &amp; Schedule</a>
             <a href="leaders.php">Stats</a>
             <a href="draft_order.php">Draft Order</a>
+            <a href="injuries.php">Injury Report</a>
         </div>
     </div>
 
@@ -188,6 +189,7 @@ try {
                 <?php endif; ?>
                 <a href="lines.php">My Line Editor</a>
                 <a href="notifications.php">Notifications</a>
+                <a href="compare.php">Compare Players</a>
             </div>
         </div>
 
