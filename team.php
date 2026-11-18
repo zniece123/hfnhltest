@@ -26,85 +26,85 @@ function requiresWaivers(array $p): bool {
 $isAdminUser = (!empty($_SESSION['is_commish']) || !empty($_SESSION['is_admin']));
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($isTeamGM || $isAdminUser) && !empty($_POST['gm_roster_action'])) {
-    $moveAct = $_POST['gm_roster_action'];
-    $pid     = (int)($_POST['player_id'] ?? 0);
+$moveAct = $_POST['gm_roster_action'];
+$pid     = (int)($_POST['player_id'] ?? 0);
 
-    if ($pid > 0) {
-        $chkStmt = $pdo->prepare("SELECT * FROM players WHERE player_id = ? AND team_id = ?");
-        $chkStmt->execute(array($pid, $team_id));
-        $targetPlayer = $chkStmt->fetch(PDO::FETCH_ASSOC);
+if ($pid > 0) {
+    $chkStmt = $pdo->prepare("SELECT * FROM players WHERE player_id = ? AND team_id = ?");
+    $chkStmt->execute(array($pid, $team_id));
+    $targetPlayer = $chkStmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($targetPlayer) {
-            $fullName = trim(($targetPlayer['first_name'] ?? '') . ' ' . ($targetPlayer['last_name'] ?? ''));
+    if ($targetPlayer) {
+        $fullName = trim(($targetPlayer['first_name'] ?? '') . ' ' . ($targetPlayer['last_name'] ?? ''));
 
-            if ($moveAct === 'send_to_ahl') {
-                $needsWaivers = requiresWaivers($targetPlayer);
+        if ($moveAct === 'send_to_ahl') {
+            $needsWaivers = requiresWaivers($targetPlayer);
 
-                $pdo->prepare("
+            $pdo->prepare("
                     UPDATE players
                     SET roster_status = 'AHL',
                         line_number   = 99
                     WHERE player_id = ? AND team_id = ?
                 ")->execute(array($pid, $team_id));
 
-                if ($needsWaivers) {
-                    $rosterAlertType = 'warning';
-                    $rosterMsg = "WAIVER NOTICE: {$fullName} requires waivers to be sent down to the AHL! Please ensure waivers are posted and processed per league rules.";
-                } else {
-                    $rosterAlertType = 'info';
-                    $rosterMsg = "{$fullName} is waiver-exempt and has been sent down to the AHL.";
-                }
-            } elseif ($moveAct === 'call_up_pro') {
-                $pdo->prepare("
+            if ($needsWaivers) {
+                $rosterAlertType = 'warning';
+                $rosterMsg = "WAIVER NOTICE: {$fullName} requires waivers to be sent down to the AHL! Please ensure waivers are posted and processed per league rules.";
+            } else {
+                $rosterAlertType = 'info';
+                $rosterMsg = "{$fullName} is waiver-exempt and has been sent down to the AHL.";
+            }
+        } elseif ($moveAct === 'call_up_pro') {
+            $pdo->prepare("
                     UPDATE players
                     SET roster_status = 'PRO',
                         line_number   = 99
                     WHERE player_id = ? AND team_id = ?
                 ")->execute(array($pid, $team_id));
 
-                $rosterAlertType = 'info';
-                $rosterMsg = "{$fullName} has been called up to the NHL roster (placed on Healthy Scratch / Line 99).";
-            } elseif ($moveAct === 'activate_rights_player') {
-                $dest   = (($_POST['dest_roster'] ?? 'PRO') === 'AHL') ? 'AHL' : 'PRO';
-                $isElig = !empty($targetPlayer['is_eligible_activate']);
+            $rosterAlertType = 'info';
+            $rosterMsg = "{$fullName} has been called up to the NHL roster (placed on Healthy Scratch / Line 99).";
+        } elseif ($moveAct === 'activate_rights_player') {
+            $dest   = (($_POST['dest_roster'] ?? 'PRO') === 'AHL') ? 'AHL' : 'PRO';
+            $isElig = !empty($targetPlayer['is_eligible_activate']);
 
-                if (!$isElig && !$isAdminUser) {
-                    $rosterAlertType = 'error';
-                    $rosterMsg = "Cannot activate {$fullName}: Player is marked ineligible (did not play prior season).";
-                } else {
-                    $capBlocked = false;
-                    if ($dest === 'PRO' && function_exists('getTeamCapSummary')) {
-                        $capCheck = getTeamCapSummary($pdo, $team_id);
-                        if (($capCheck['cap_hit'] + (int)$targetPlayer['salary']) > $capCheck['cap_max']) {
-                            $capBlocked      = true;
-                            $rosterAlertType = 'error';
-                            $rosterMsg       = "Cannot activate {$fullName} to NHL: Adding $" . number_format((int)$targetPlayer['salary']) . " exceeds the $" . number_format($capCheck['cap_max']) . " Salary Cap ceiling.";
-                        }
+            if (!$isElig && !$isAdminUser) {
+                $rosterAlertType = 'error';
+                $rosterMsg = "Cannot activate {$fullName}: Player is marked ineligible (did not play prior season).";
+            } else {
+                $capBlocked = false;
+                if ($dest === 'PRO' && function_exists('getTeamCapSummary')) {
+                    $capCheck = getTeamCapSummary($pdo, $team_id);
+                    if (($capCheck['cap_hit'] + (int)$targetPlayer['salary']) > $capCheck['cap_max']) {
+                        $capBlocked      = true;
+                        $rosterAlertType = 'error';
+                        $rosterMsg       = "Cannot activate {$fullName} to NHL: Adding $" . number_format((int)$targetPlayer['salary']) . " exceeds the $" . number_format($capCheck['cap_max']) . " Salary Cap ceiling.";
                     }
+                }
 
-                    if (!$capBlocked) {
-                        $pdo->prepare("
+                if (!$capBlocked) {
+                    $pdo->prepare("
                             UPDATE players
                             SET roster_status = ?,
                                 line_number   = 99
                             WHERE player_id = ? AND team_id = ?
                         ")->execute(array($dest, $pid, $team_id));
 
-                        $rosterAlertType = 'info';
-                        $rosterMsg       = "{$fullName} has been reactivated to the {$dest} roster with their saved contract intact!";
-                    }
+                    $rosterAlertType = 'info';
+                    $rosterMsg       = "{$fullName} has been reactivated to the {$dest} roster with their saved contract intact!";
                 }
-            } elseif ($moveAct === 'release_rights_player') {
-                $addedTs  = !empty($targetPlayer['rights_added_at']) ? strtotime($targetPlayer['rights_added_at']) : time();
-                $daysHeld = (int)floor((time() - $addedTs) / 86400);
-                $canRel   = ($daysHeld >= 365 || $isAdminUser);
+            }
+        } elseif ($moveAct === 'release_rights_player') {
+            $addedTs  = !empty($targetPlayer['rights_added_at']) ? strtotime($targetPlayer['rights_added_at']) : time();
+            $daysHeld = (int)floor((time() - $addedTs) / 86400);
+            $canRel   = ($daysHeld >= 365 || $isAdminUser);
 
-                if (!$canRel) {
-                    $daysLeft        = 365 - $daysHeld;
-                    $rosterAlertType = 'error';
-                    $rosterMsg       = "Cannot release {$fullName} yet: European/LTIR rights players must be held for 1 full year ({$daysLeft} days remaining).";
-                } else {
-                    $pdo->prepare("
+            if (!$canRel) {
+                $daysLeft        = 365 - $daysHeld;
+                $rosterAlertType = 'error';
+                $rosterMsg       = "Cannot release {$fullName} yet: European/LTIR rights players must be held for 1 full year ({$daysLeft} days remaining).";
+            } else {
+                $pdo->prepare("
                         UPDATE players
                         SET team_id        = NULL,
                             prev_team_id   = ?,
@@ -117,109 +117,135 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($isTeamGM || $isAdminUser) && !emp
                         WHERE player_id = ? AND team_id = ?
                     ")->execute(array($team_id, $pid, $team_id));
 
-                    $rosterAlertType = 'info';
-                    $rosterMsg       = "{$fullName} has been released from Rights Owned into Unrestricted Free Agency.";
-                }
-            }
-        }
-    }
-
-    $prospectId = (int)($_POST['prospect_id'] ?? 0);
-    if ($prospectId > 0 && ($moveAct === 'sign_prospect_elc' || $moveAct === 'release_prospect')) {
-        $prStmt = $pdo->prepare("SELECT * FROM prospects WHERE prospect_id = ? AND team_id = ?");
-        $prStmt->execute(array($prospectId, $team_id));
-        $pr = $prStmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($pr) {
-            $prName = trim(($pr['first_name'] ?? '') . ' ' . ($pr['last_name'] ?? ''));
-
-            if ($moveAct === 'release_prospect') {
-                $pdo->prepare("DELETE FROM prospects WHERE prospect_id = ? AND team_id = ?")
-                        ->execute(array($prospectId, $team_id));
                 $rosterAlertType = 'info';
-                $rosterMsg       = "Draft rights to {$prName} have been relinquished.";
-            } elseif ($moveAct === 'sign_prospect_elc') {
-                $draftYear = (int)($pr['draft_year'] ?? 2025);
-                $rawAge    = (int)($pr['age'] ?? 0);
-                $pAge      = ($rawAge > 18) ? $rawAge : (($draftYear > 0 && $draftYear < 2026) ? (2026 - $draftYear + 18) : 18);
-                $dest      = (($_POST['dest_roster'] ?? 'AHL') === 'PRO') ? 'PRO' : 'AHL';
-
-                if ($pAge <= 21) $elcYears = 3;
-                elseif ($pAge <= 23) $elcYears = 2;
-                else $elcYears = 1;
-
-                $elcMin    = 775000;
-                $elcMax    = ($draftYear >= 2024) ? 975000 : 950000;
-                $reqSalary = (int)preg_replace('/[^0-9]/', '', (string)($_POST['elc_salary'] ?? $elcMax));
-
-                if ($reqSalary < $elcMin || $reqSalary > $elcMax) {
-                    $rosterAlertType = 'error';
-                    $rosterMsg       = "Invalid ELC salary for {$prName}: Must be between $" . number_format($elcMin) . " and $" . number_format($elcMax) . " (Term is fixed at {$elcYears} yr" . ($elcYears > 1 ? 's' : '') . ").";
-                } else {
-                    $capBlocked = false;
-                    if ($dest === 'PRO' && function_exists('getTeamCapSummary')) {
-                        $capCheck = getTeamCapSummary($pdo, $team_id);
-                        if (($capCheck['cap_hit'] + $reqSalary) > $capCheck['cap_max']) {
-                            $capBlocked      = true;
-                            $rosterAlertType = 'error';
-                            $rosterMsg       = "Cannot sign {$prName} directly to NHL: $" . number_format($reqSalary) . " ELC exceeds the $" . number_format($capCheck['cap_max']) . " Salary Cap ceiling (try signing to AHL instead).";
-                        }
-                    }
-
-                    if (!$capBlocked) {
-                        $pos = strtoupper(trim($pr['position'] ?? 'C'));
-                        if ($pos === 'F' || $pos === '') $pos = 'C';
-                        $isGoalie = ($pos === 'G');
-
-                        $ins = $pdo->prepare("
-                            INSERT INTO players (
-                                team_id, first_name, last_name, position, age,
-                                roster_status, contract_years, salary,
-                                overall_rating, skating, shooting, passing, defense, physical, goaltending,
-                                line_number, condition, is_injured, injury_days_remaining, is_retired
-                            ) VALUES (
-                                ?, ?, ?, ?, ?,
-                                ?, ?, ?,
-                                ?, ?, ?, ?, ?, ?, ?,
-                                99, 100, FALSE, 0, FALSE
-                            )
-                        ");
-                        $ins->execute(array(
-                                $team_id,
-                                trim($pr['first_name']),
-                                trim($pr['last_name']),
-                                $pos,
-                                $pAge,
-                                $dest,
-                                $elcYears,
-                                $reqSalary,
-                                68,
-                                $isGoalie ? 50 : 69,
-                                $isGoalie ? 50 : 68,
-                                $isGoalie ? 50 : 68,
-                                $isGoalie ? 50 : 67,
-                                $isGoalie ? 50 : 67,
-                                $isGoalie ? 69 : 50
-                        ));
-
-                        $pdo->prepare("DELETE FROM prospects WHERE prospect_id = ? AND team_id = ?")
-                                ->execute(array($prospectId, $team_id));
-
-                        $rosterAlertType = 'info';
-                        $rosterMsg       = "ELC SIGNED! {$prName} signed a fixed {$elcYears}-year Entry-Level Contract at $" . number_format($reqSalary) . "/yr and assigned to {$dest}.";
-                    }
-                }
+                $rosterMsg       = "{$fullName} has been released from Rights Owned into Unrestricted Free Agency.";
             }
         }
     }
 }
 
+$prospectId = (int)($_POST['prospect_id'] ?? 0);
+if ($prospectId > 0 && ($moveAct === 'sign_prospect_elc' || $moveAct === 'release_prospect')) {
+$prStmt = $pdo->prepare("SELECT * FROM prospects WHERE prospect_id = ? AND team_id = ?");
+$prStmt->execute(array($prospectId, $team_id));
+$pr = $prStmt->fetch(PDO::FETCH_ASSOC);
+
+if ($pr) {
+$prName = trim(($pr['first_name'] ?? '') . ' ' . ($pr['last_name'] ?? ''));
+
+if ($moveAct === 'release_prospect') {
+    $pdo->prepare("DELETE FROM prospects WHERE prospect_id = ? AND team_id = ?")
+            ->execute(array($prospectId, $team_id));
+    $rosterAlertType = 'info';
+    $rosterMsg       = "Draft rights to {$prName} have been relinquished.";
+} elseif ($moveAct === 'sign_prospect_elc') {
+$draftYear = (int)($pr['draft_year'] ?? 2025);
+$rawAge    = (int)($pr['age'] ?? 0);
+$pAge      = ($rawAge > 18) ? $rawAge : (($draftYear > 0 && $draftYear < 2026) ? (2026 - $draftYear + 18) : 18);
+$dest      = (($_POST['dest_roster'] ?? 'AHL') === 'PRO') ? 'PRO' : 'AHL';
+
+if ($pAge <= 21) $elcYears = 3;
+elseif ($pAge <= 23) $elcYears = 2;
+else $elcYears = 1;
+
+$elcMin    = 775000;
+$elcMax    = ($draftYear >= 2024) ? 975000 : 950000;
+$reqSalary = (int)preg_replace('/[^0-9]/', '', (string)($_POST['elc_salary'] ?? $elcMax));
+
+if ($reqSalary < $elcMin || $reqSalary > $elcMax) {
+    $rosterAlertType = 'error';
+    $rosterMsg       = "Invalid ELC salary for {$prName}: Must be between $" . number_format($elcMin) . " and $" . number_format($elcMax) . " (Term is fixed at {$elcYears} yr" . ($elcYears > 1 ? 's' : '') . ").";
+} else {
+$capBlocked = false;
+if ($dest === 'PRO' && function_exists('getTeamCapSummary')) {
+    $capCheck = getTeamCapSummary($pdo, $team_id);
+    if (($capCheck['cap_hit'] + $reqSalary) > $capCheck['cap_max']) {
+        $capBlocked      = true;
+        $rosterAlertType = 'error';
+        $rosterMsg       = "Cannot sign {$prName} directly to NHL: $" . number_format($reqSalary) . " ELC exceeds the $" . number_format($capCheck['cap_max']) . " Salary Cap ceiling (try signing to AHL instead).";
+    }
+}
+
+if (!$capBlocked) {
+$pos = strtoupper(trim($pr['position'] ?? 'C'));
+if ($pos === 'F' || $pos === '') $pos = 'C';
+$isGoalie = ($pos === 'G');
+
+$dupChk = $pdo->prepare("
+                            SELECT player_id FROM players
+                            WHERE team_id = ?
+                              AND LOWER(TRIM(first_name)) = LOWER(TRIM(?))
+                              AND LOWER(TRIM(last_name)) = LOWER(TRIM(?))
+                              AND COALESCE(is_retired, FALSE) = FALSE
+                            LIMIT 1
+                        ");
+$dupChk->execute(array($team_id, trim($pr['first_name']), trim($pr['last_name'])));
+$existingPid = (int)$dupChk->fetchColumn();
+
+if ($existingPid > 0) {
+$pdo->prepare("
+                                UPDATE players
+                                SET roster_status  = ?,
+                                    contract_years = ?,
+                                    salary         = ?,
+                                    age            = GREATEST(COALESCE(age, 18), ?),
+                                    line_number    = 99
+                                WHERE player_id = ?
+                            ")->execute(array($dest, $elcYears, $reqSalary, $pAge, $existingPid));
+} else {
+    $ins = $pdo->prepare("
+                                INSERT INTO players (
+                                    team_id, first_name, last_name, position, age,
+                                    roster_status, contract_years, salary,
+                                    overall_rating, skating, shooting, passing, defense, physical, goaltending,
+                                    line_number, condition, is_injured, injury_days_remaining, is_retired
+                                ) VALUES (
+                                    ?, ?, ?, ?, ?,
+                                    ?, ?, ?,
+                                    ?, ?, ?, ?, ?, ?, ?,
+                                    99, 100, FALSE, 0, FALSE
+                                )
+                            ");
+    $ins->execute(array(
+            $team_id,
+            trim($pr['first_name']),
+            trim($pr['last_name']),
+            $pos,
+            $pAge,
+            $dest,
+            $elcYears,
+            $reqSalary,
+            68,
+            $isGoalie ? 50 : 69,
+            $isGoalie ? 50 : 68,
+            $isGoalie ? 50 : 68,
+            $isGoalie ? 50 : 67,
+            $isGoalie ? 50 : 67,
+            $isGoalie ? 69 : 50
+    ));
+}
+
+    $pdo->prepare("DELETE FROM prospects WHERE prospect_id = ? AND team_id = ?")
+            ->execute(array($prospectId, $team_id));
+
+    $rosterAlertType = 'info';
+    $rosterMsg       = "ELC SIGNED! {$prName} signed a fixed {$elcYears}-year Entry-Level Contract at $" . number_format($reqSalary) . "/yr and assigned to {$dest}.";
+}
+}
+}
+}
+}
+}
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isCommish && !empty($_POST['commish_player_action'])) {
     $act  = $_POST['commish_player_action'];
     $pid  = (int)($_POST['player_id'] ?? 0);
     $note = trim($_POST['rights_note'] ?? '');
 
     if ($pid > 0) {
+        $pInfoStmt = $pdo->prepare("SELECT first_name, last_name FROM players WHERE player_id = ? AND team_id = ?");
+        $pInfoStmt->execute(array($pid, $team_id));
+        $pInfo = $pInfoStmt->fetch(PDO::FETCH_ASSOC);
+
         if ($act === 'send_ltir') {
             $pdo->prepare("
                 UPDATE players
@@ -228,6 +254,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isCommish && !empty($_POST['commis
                     rights_notes  = COALESCE(NULLIF(?, ''), rights_notes)
                 WHERE player_id = ? AND team_id = ?
             ")->execute(array($note, $pid, $team_id));
+
+            if ($pInfo) {
+                $pdo->prepare("DELETE FROM prospects WHERE team_id = ? AND LOWER(TRIM(first_name)) = LOWER(TRIM(?)) AND LOWER(TRIM(last_name)) = LOWER(TRIM(?))")
+                        ->execute(array($team_id, $pInfo['first_name'], $pInfo['last_name']));
+            }
             $commMsg = "Player placed on Injury / LTIR (contract & team rights preserved).";
         } elseif ($act === 'send_euro') {
             $pdo->prepare("
@@ -237,6 +268,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isCommish && !empty($_POST['commis
                     rights_notes  = COALESCE(NULLIF(?, ''), rights_notes)
                 WHERE player_id = ? AND team_id = ?
             ")->execute(array($note, $pid, $team_id));
+
+            if ($pInfo) {
+                $pdo->prepare("DELETE FROM prospects WHERE team_id = ? AND LOWER(TRIM(first_name)) = LOWER(TRIM(?)) AND LOWER(TRIM(last_name)) = LOWER(TRIM(?))")
+                        ->execute(array($team_id, $pInfo['first_name'], $pInfo['last_name']));
+            }
             $commMsg = "Player assigned to Europe (contract & team rights preserved).";
         } elseif ($act === 'retire_player') {
             $pdo->prepare("
@@ -262,6 +298,207 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isCommish && !empty($_POST['commis
         }
     }
 }
+$tStmt = $pdo->prepare("SELECT * FROM teams WHERE team_id = ?");
+$tStmt->execute(array($team_id));
+$team = $tStmt->fetch(PDO::FETCH_ASSOC);
+if (!$team) die("Team not found.");
+
+$abbr    = strtoupper(trim($team['abbreviation'] ?? ''));
+$nhlName = $team['name'] ?? 'NHL Team';
+$ahlName = $team['ahl_affiliate'] ?? ($team['farm_team'] ?? 'AHL Affiliate');
+$gmName  = $team['gm_name'] ?? 'Vacant';
+$c1      = $team['primary_color'] ?? '#0284c7';
+$c2      = $team['secondary_color'] ?? '#38bdf8';
+
+$gmUserStmt = $pdo->prepare("SELECT username FROM users WHERE team_id = ? LIMIT 1");
+$gmUserStmt->execute(array($team_id));
+$dbGmUser = $gmUserStmt->fetchColumn();
+if ($dbGmUser) $gmName = $dbGmUser;
+
+$gStmt = $pdo->prepare("SELECT home_team_id, away_team_id, home_score, away_score FROM games WHERE status = 'FINAL' AND (home_team_id = ? OR away_team_id = ?)");
+$gStmt->execute(array($team_id, $team_id));
+$gp = $w = $l = $otl = $pts = $gf = $ga = 0;
+foreach ($gStmt->fetchAll(PDO::FETCH_ASSOC) as $g) {
+    $isHome = ((int)$g['home_team_id'] === $team_id);
+    $myS    = $isHome ? (int)$g['home_score'] : (int)$g['away_score'];
+    $opS    = $isHome ? (int)$g['away_score'] : (int)$g['home_score'];
+    $gp++;
+    $gf += $myS;
+    $ga += $opS;
+    $isOt = (abs($myS - $opS) === 1 && ($myS + $opS) >= 3);
+    if ($myS > $opS) {
+        $w++;
+        $pts += 2;
+    } elseif ($isOt) {
+        $otl++;
+        $pts += 1;
+    } else {
+        $l++;
+    }
+}
+
+$pStmt = $pdo->prepare("SELECT * FROM players WHERE team_id = ? AND COALESCE(is_retired, FALSE) = FALSE ORDER BY overall_rating DESC, last_name ASC");
+
+$pStmt->execute(array($team_id));
+$allPlayers = $pStmt->fetchAll(PDO::FETCH_ASSOC);
+
+$nhlPlayers              = array();
+$ahlPlayers              = array();
+$inactiveContractPlayers = array();
+
+foreach ($allPlayers as $p) {
+    $st = strtoupper(trim($p['roster_status'] ?? ''));
+    if ($st === 'PRO') {
+        $nhlPlayers[] = $p;
+    } elseif (in_array($st, array('LTIR', 'INJURED', 'EURO', 'EUROPE', 'RIGHTS', 'INACTIVE'))) {
+        $inactiveContractPlayers[] = $p;
+    } elseif ($st === 'AHL') {
+        $ahlPlayers[] = $p;
+    }
+}
+
+$avgOvr = 0;
+if (!empty($nhlPlayers)) {
+    $sumOvr = 0;
+    foreach ($nhlPlayers as $np) $sumOvr += (int)$np['overall_rating'];
+    $avgOvr = round($sumOvr / count($nhlPlayers));
+}
+$prStmt = $pdo->prepare("SELECT * FROM prospects WHERE team_id = ? AND COALESCE(draft_year, 0) > 0 ORDER BY draft_year DESC, notes ASC");
+$prStmt->execute(array($team_id));
+$prospects = $prStmt->fetchAll(PDO::FETCH_ASSOC);
+
+$rightsStmt = $pdo->prepare("SELECT * FROM prospects WHERE team_id = ? AND COALESCE(draft_year, 0) = 0 ORDER BY 1 ASC");
+$rightsStmt->execute(array($team_id));
+$rightsOwned = $rightsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+$pkStmt = $pdo->prepare("
+    SELECT dp.draft_year, dp.round_num, orig.abbreviation AS orig_abbr, orig.name AS orig_name, dp.conditions
+    FROM draft_picks dp
+    JOIN teams orig ON dp.original_team_id = orig.team_id
+    WHERE dp.current_team_id = ? AND COALESCE(dp.is_used, FALSE) = FALSE
+    ORDER BY dp.draft_year ASC, dp.round_num ASC, orig.abbreviation ASC
+");
+$pkStmt->execute(array($team_id));
+$ownedPicks = $pkStmt->fetchAll(PDO::FETCH_ASSOC);
+
+$pickMatrix = array();
+$pickYears  = array();
+$condNotes  = array();
+foreach ($ownedPicks as $pk) {
+    $yr = (int)$pk['draft_year'];
+    $rd = (int)$pk['round_num'];
+    $pickYears[$yr] = $yr;
+    $pickMatrix[$yr][$rd][] = strtoupper(trim($pk['orig_abbr']));
+    if (trim((string)$pk['conditions']) !== '') {
+        $condNotes[] = "{$yr} Rd {$rd} ({$pk['orig_abbr']}): " . trim($pk['conditions']);
+    }
+}
+ksort($pickYears);
+
+function getTeamLogoHtml($abbr) {
+    $a = strtoupper(trim($abbr));
+    return '<span class="pick-chip" title="' . htmlspecialchars($a) . '">'
+            . '<img src="logos/' . htmlspecialchars($a) . '.svg" alt="' . htmlspecialchars($a) . '">'
+            . '</span>';
+}
+
+function getLineLabel($p, $isPro) {
+    if (!$isPro) return '<span class="badge-farm">AHL</span>';
+    $pos = strtoupper(trim($p['position']));
+    $ln  = (int)$p['line_number'];
+    if ($pos === 'G') {
+        if ($ln === 1) return '<span class="line-pill">Starter</span>';
+        if ($ln === 2) return '<span class="line-pill">Backup</span>';
+        return '<span class="line-pill scratch">Reserve</span>';
+    }
+    if ($pos === 'D') {
+        if ($ln >= 1 && $ln <= 3) return '<span class="line-pill">Pair ' . $ln . '</span>';
+        return '<span class="line-pill scratch">Scratch</span>';
+    }
+    if ($ln >= 1 && $ln <= 4) return '<span class="line-pill">Line ' . $ln . '</span>';
+    return '<span class="line-pill scratch">Scratch</span>';
+}
+
+function extractProspectName($row) {
+    $combined = trim(($row['first_name'] ?? '') . ' ' . ($row['last_name'] ?? ''));
+    if ($combined !== '') return $combined;
+    $skipCols = array('id', 'prospect_id', 'team_id', 'draft_year', 'notes', 'status', 'overall_pick', 'round', 'position');
+    foreach ($row as $col => $val) {
+        if (!in_array(strtolower((string)$col), $skipCols) && !is_numeric($val) && trim((string)$val) !== '') {
+            return trim((string)$val);
+        }
+    }
+    return '';
+}
+function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL') {
+    if (empty($rows)) {
+        echo '<p style="color:#94a3b8;">No players assigned to this roster.</p>';
+        return;
+    }
+    echo '<table>
+        <tr>
+            <th style="width:90px;">Line</th><th>Player</th><th>Pos</th><th>OVR</th>
+            <th>SK</th><th>SH</th><th>PA</th><th>DF</th><th>PH</th>
+            <th>Contract</th><th>Cond</th>';
+    if ($isTeamGM) {
+        echo '<th style="width:135px; text-align:center;">Roster Move</th>';
+    }
+    echo '</tr>';
+
+    foreach ($rows as $p) {
+        $inj      = !empty($p['is_injured']) ? '<span class="inj"> (INJ ' . (int)$p['injury_days_remaining'] . 'd)</span>' : '';
+        $fullName = trim($p['first_name'] . ' ' . $p['last_name']);
+        $needsWvr = $isPro && requiresWaivers($p);
+        $wvrBadge = $needsWvr ? ' <span class="badge-waiver">Waivers</span>' : '';
+
+        echo '<tr>
+            <td>' . getLineLabel($p, $isPro) . '</td>
+            <td><strong>' . htmlspecialchars($fullName) . '</strong>' . $inj . $wvrBadge . '</td>
+            <td>' . htmlspecialchars($p['position']) . '</td>
+            <td><strong>' . (int)$p['overall_rating'] . '</strong></td>
+            <td>' . (int)$p['skating'] . '</td>
+            <td>' . (int)$p['shooting'] . '</td>
+            <td>' . (int)$p['passing'] . '</td>
+            <td>' . (int)$p['defense'] . '</td>
+            <td>' . (int)$p['physical'] . '</td>
+            <td>$' . number_format((int)$p['salary']) . ' (' . (int)$p['contract_years'] . 'y)</td>
+            <td>' . (int)$p['condition'] . '%</td>';
+
+        if ($isTeamGM) {
+            $pid     = (int)$p['player_id'];
+            $jsName  = htmlspecialchars($fullName, ENT_QUOTES);
+            $jsAhl   = htmlspecialchars($ahlName, ENT_QUOTES);
+            echo '<td style="text-align:center;">';
+            if ($isPro) {
+                $onsubmit = $needsWvr
+                        ? "return confirm('WAIVER WARNING: {$jsName} requires WAIVERS to be sent down to {$jsAhl}. Continue?');"
+                        : "return true;";
+                $btnClass = $needsWvr ? 'btn-move-waiver' : 'btn-move-down';
+                echo '<form method="POST" style="margin:0;" onsubmit="' . $onsubmit . '">
+                        <input type="hidden" name="player_id" value="' . $pid . '">
+                        <input type="hidden" name="gm_roster_action" value="send_to_ahl">
+                        <button type="submit" class="btn-move ' . $btnClass . '">
+                            Send Down' . ($needsWvr ? ' ⚠️' : '') . '
+                        </button>
+                      </form>';
+            } else {
+                echo '<form method="POST" style="margin:0;">
+                        <input type="hidden" name="player_id" value="' . $pid . '">
+                        <input type="hidden" name="gm_roster_action" value="call_up_pro">
+                        <button type="submit" class="btn-move btn-move-up">
+                            Call Up
+                        </button>
+                      </form>';
+            }
+            echo '</td>';
+        }
+        echo '</tr>';
+    }
+    echo '</table>';
+}
+?>
+
+
 
 $tStmt = $pdo->prepare("SELECT * FROM teams WHERE team_id = ?");
 $tStmt->execute(array($team_id));
@@ -847,7 +1084,7 @@ function fmtLinePlayer($p) {
 <h2><span class="league-tag-ahl">AHL</span><?= htmlspecialchars($ahlName) ?> Roster (<?= count($ahlPlayers) ?>)</h2>
 <?php renderRosterTable($ahlPlayers, false, $isTeamGM, $ahlName); ?>
 <?php
-// 1. Fetch Rights Owned, Euro, and LTIR players (saved in `players`)
+
 $rightsStmt = $pdo->prepare("
     SELECT *
     FROM players
@@ -859,7 +1096,7 @@ $rightsStmt = $pdo->prepare("
 $rightsStmt->execute(array($team_id));
 $rightsPlayers = $rightsStmt->fetchAll(PDO::FETCH_ASSOC);
 
-// 2. Fetch Drafted Prospects only (stored in `prospects`)
+
 $prospStmt = $pdo->prepare("
     SELECT *
     FROM prospects
