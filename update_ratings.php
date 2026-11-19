@@ -16,6 +16,23 @@ $msg = '';
 $msgType = 'info';
 $skippedAmbiguous = 0;
 $skippedUnmatched = 0;
+$skipDetails = [];
+$skipDetailsLimit = 500;
+
+function recordSkippedPlayer(array &$details, int $limit, string $name, string $externalId, string $position, string $reason, array $candidates = []): void {
+    if (count($details) >= $limit) return;
+    $candidateText = [];
+    foreach ($candidates as $candidate) {
+        $candidateText[] = trim((string)($candidate['first_name'] ?? '') . ' ' . (string)($candidate['last_name'] ?? ''))
+            . ' [DB ID: ' . (string)($candidate['player_id'] ?? '?')
+            . ', Position: ' . (string)($candidate['position'] ?? '?')
+            . ', NHL ID: ' . (string)($candidate['nhl_player_id'] ?? 'not linked') . ']';
+    }
+    $details[] = [
+        'name' => $name, 'nhl_id' => $externalId, 'position' => $position,
+        'reason' => $reason, 'candidates' => $candidateText
+    ];
+}
 
 function cleanMpName(string $name): string {
     $map = [
@@ -282,19 +299,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $externalId = trim((string)mpValue($row, $colIdx, ['playerId', 'playerid'], ''));
                 $position = strtoupper(trim((string)mpValue($row, $colIdx, ['position'], '')));
 
-                $matches = ($externalId !== '') ? findByNhlId($allP, $externalId) : [];
-                if (count($matches) > 1) $matches = []; // duplicate external IDs are unsafe
-                if (!$matches && $position !== '') {
-                    $matches = findUniqueNamePositionMatch($nameMap, $key, $position);
-                    if (count($matches) === 1 && $externalId !== '') {
+                $idMatches = ($externalId !== '') ? findByNhlId($allP, $externalId) : [];
+                $nameCandidates = $nameMap[$key] ?? [];
+                $positionCandidates = [];
+                foreach ($nameCandidates as $candidate) {
+                    if (strtoupper(trim((string)$candidate['position'])) === $position) {
+                        $positionCandidates[] = $candidate;
+                    }
+                }
+                $matches = [];
+                $skipReason = '';
+
+                if (count($idMatches) === 1) {
+                    $matches = $idMatches;
+                } elseif (count($idMatches) > 1) {
+                    $skipReason = 'Duplicate NHL player ID is linked to multiple database records';
+                } elseif ($position !== '' && count($positionCandidates) === 1) {
+                    $matches = $positionCandidates;
+                    if ($externalId !== '') {
                         $linkNhlId->execute([$externalId, $matches[0]['player_id'], $externalId]);
                         $matches[0]['nhl_player_id'] = $externalId;
                     }
+                } elseif (count($positionCandidates) > 1) {
+                    $skipReason = 'Multiple database players have the same normalized name and position';
+                } elseif (count($nameCandidates) > 0) {
+                    $dbPositions = array_values(array_unique(array_map(function ($candidate) {
+                        return (string)$candidate['position'];
+                    }, $nameCandidates)));
+                    $skipReason = 'Name exists in database, but MoneyPuck position ' . ($position ?: '(blank)')
+                        . ' does not match database position(s): ' . implode(', ', $dbPositions);
+                } else {
+                    $skipReason = 'No database player has this normalized name';
                 }
 
                 if (!$matches) {
-                    if (count($nameMap[$key] ?? []) > 0) $skippedAmbiguous++;
-                    else $skippedUnmatched++;
+                    if (count($nameCandidates) > 0 || count($idMatches) > 1) {
+                        $skippedAmbiguous++;
+                    } else {
+                        $skippedUnmatched++;
+                    }
+                    recordSkippedPlayer($skipDetails, $skipDetailsLimit, $rawName, $externalId, $position, $skipReason, $nameCandidates ?: $idMatches);
                     continue;
                 }
 
@@ -337,7 +381,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 } else {
                     if (strtoupper($position) === 'G') continue;
-                    // Header names below match the supplied MoneyPuck export.
                     $goals = (float)mpValue($row, $colIdx, ['I_F_goals'], 0);
                     $a1 = (float)mpValue($row, $colIdx, ['I_F_primaryAssists'], 0);
                     $a2 = (float)mpValue($row, $colIdx, ['I_F_secondaryAssists'], 0);
@@ -346,6 +389,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $blocks = (float)mpValue($row, $colIdx, ['I_F_blockedShotAttempts'], 0);
                     $individualXg = (float)mpValue($row, $colIdx, ['I_F_xGoals'], 0);
                     $onIceXgPct = (float)mpValue($row, $colIdx, ['onIce_xGoalsPercentage'], 0.50);
+                    // This export supplies on-ice xG percentage rather than
+                    // separate on-ice for/against xG totals.
                     $onXga = 0.0;
                     $onXgf = 0.0;
 
@@ -404,7 +449,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $msg = "The CSV was read, but no player profiles were updated. Check that player names/positions match your database and that the file contains situation=all rows. Skipped {$skippedAmbiguous} ambiguous and {$skippedUnmatched} unmatched rows.";
         }
     }
-    }
+    } 
 }
 ?>
 <!DOCTYPE html>
@@ -432,6 +477,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <p style="color:#94a3b8;">Upload your <strong>AHL Full League</strong> CSV and <strong>NHL (MoneyPuck)</strong> CSVs in any order—two-way players automatically blend based on NHL vs. AHL games played.</p>
 <?php if ($msg): ?>
     <div class="alert <?= $msgType ?>"><?= htmlspecialchars($msg) ?></div>
+<?php endif; ?>
+<?php if (!empty($skipDetails)): ?>
+    <h2>Skipped Player Diagnostics</h2>
+    <p style="color:#94a3b8;">These rows were not updated. Review the reason and any possible database matches below. The report is capped at <?= (int)$skipDetailsLimit ?> entries per upload.</p>
+    <div style="overflow-x:auto; margin-bottom:20px;">
+    <table style="width:100%; border-collapse:collapse; background:#1e293b; font-size:0.88em;">
+        <thead><tr style="background:#334155; text-align:left;">
+            <th style="padding:9px;">CSV Player</th><th style="padding:9px;">MoneyPuck ID</th>
+            <th style="padding:9px;">CSV Pos</th><th style="padding:9px;">Reason skipped</th><th style="padding:9px;">Possible DB matches</th>
+        </tr></thead><tbody>
+        <?php foreach ($skipDetails as $detail): ?>
+            <tr style="border-top:1px solid #475569; vertical-align:top;">
+                <td style="padding:9px;"><?= htmlspecialchars($detail['name']) ?></td>
+                <td style="padding:9px;"><?= htmlspecialchars($detail['nhl_id']) ?></td>
+                <td style="padding:9px;"><?= htmlspecialchars($detail['position']) ?></td>
+                <td style="padding:9px;"><?= htmlspecialchars($detail['reason']) ?></td>
+                <td style="padding:9px;"><?= htmlspecialchars(implode('; ', $detail['candidates'])) ?></td>
+            </tr>
+        <?php endforeach; ?>
+        </tbody></table></div>
 <?php endif; ?>
 <div class="card">
     <form method="POST" enctype="multipart/form-data">
