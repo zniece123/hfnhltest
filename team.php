@@ -639,6 +639,28 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL', $
                         <button type="submit" class="btn-move" style="background:#991b1b;">Buy Out</button>
                       </form>';
             }
+            if (!empty($_SESSION['is_commish']) || !empty($_SESSION['is_admin'])) {
+                echo '<div style="margin-top:5px; display:flex; gap:3px; justify-content:center; flex-wrap:wrap;">';
+
+                echo '<form method="POST" style="margin:0;" onsubmit="return confirm(\'Place ' . $jsName . ' on LTIR / Injury Reserve (preserves contract & removes from active cap)?\');">
+                        <input type="hidden" name="player_id" value="' . $pid . '">
+                        <input type="hidden" name="commish_player_action" value="send_ltir">
+                        <button type="submit" class="btn-move" style="background:#6d28d9; padding:3px 6px; font-size:0.72em;">LTIR</button>
+                      </form>';
+
+                echo '<form method="POST" style="margin:0;" onsubmit="return confirm(\'Move ' . $jsName . ' to Europe Rights Owned (preserves contract & removes from active cap)?\');">
+                        <input type="hidden" name="player_id" value="' . $pid . '">
+                        <input type="hidden" name="commish_player_action" value="send_euro">
+                        <button type="submit" class="btn-move" style="background:#0f766e; padding:3px 6px; font-size:0.72em;">Euro</button>
+                      </form>';
+
+                echo '<form method="POST" style="margin:0;" onsubmit="return confirm(\'RETIRE ' . $jsName . ' from the sim permanently?\');">
+                        <input type="hidden" name="player_id" value="' . $pid . '">
+                        <input type="hidden" name="commish_player_action" value="retire_player">
+                        <button type="submit" class="btn-move" style="background:#334155; padding:3px 6px; font-size:0.72em;">Retire</button>
+                      </form>';
+                echo '</div>';
+            }
             echo '</td>';
         }
         echo '</tr>';
@@ -744,6 +766,11 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL', $
     </div>
 <?php endif; ?>
 
+<?php if (!empty($commMsg)): ?>
+    <div class="roster-alert info">
+        <?= htmlspecialchars($commMsg) ?>
+    </div>
+<?php endif; ?>
 <div class="team-hero" style="background: linear-gradient(115deg, <?= $c1 ?> 0%, #020617 52%, <?= $c2 ?> 100%);">
     <img class="team-hero-watermark" src="logos/<?= htmlspecialchars($abbr) ?>.svg" alt="">
     <img class="team-hero-logo" src="logos/<?= htmlspecialchars($abbr) ?>.svg" alt="<?= htmlspecialchars($abbr) ?>">
