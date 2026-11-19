@@ -6,18 +6,6 @@ if (empty($_SESSION['is_commish']) && empty($_SESSION['is_admin'])) {
     die("Commissioner access only.");
 }
 
-/*
- * FIX:
- * - Never fan one name's statistics out to every player with that name.
- * - For MoneyPuck imports, match an existing NHL ID first. If it is not
- *   linked yet, use a unique normalized name match regardless of position.
- *   When names are duplicated, use normalized position (L=LW, R=RW) to
- *   distinguish records; never guess when the match remains ambiguous.
- * - Save the external playerId in nhl_player_id for future imports.
- * - Apply only the roster-confirmed full-name aliases listed below to both
- *   NHL and AHL CSV imports. AHL still requires a unique name + position match.
- * - Never create player records; unresolved or ambiguous rows are skipped.
- */
 $pdo->exec("ALTER TABLE players ADD COLUMN IF NOT EXISTS ahl_ovr INT NULL");
 $pdo->exec("ALTER TABLE players ADD COLUMN IF NOT EXISTS ahl_gp INT NOT NULL DEFAULT 0");
 $pdo->exec("ALTER TABLE players ADD COLUMN IF NOT EXISTS nhl_ovr INT NULL");
@@ -72,6 +60,7 @@ function confirmedPlayerNameAliases(): array {
         'J.J. Moser' => 'Janis Moser',
         'Max Shabanov' => 'Maxim Shabanov',
         'Will Borgen' => 'William Borgen',
+        'Martin Fehrvry' => 'Martin Fehervary',
         'Isac Lundestrm' => 'Isac Lundestrom',
         'Olli Mtt' => 'Olli Maatta',
         'Bo Groulx' => 'Benoit-Olivier Groulx',
@@ -96,6 +85,13 @@ function confirmedPlayerNameAliases(): array {
         'Tim Stutzle' => 'Tim Stützle',
         'Juraj Slafkovsky' => 'Juraj Slafkovský',
         'Jonathan Lekkerimaki' => 'Jonathan Lekkerimäki',
+        'Jonathan Lekkerimki' => 'Jonathan Lekkerimaki',
+        'Joshua Mahura' => 'Josh Mahura',
+        'Juraj Slafkovsk' => 'Juraj Slafkovsky',
+        'Tim Sttzle' => 'Tim Stutzle',
+        'Mikey Anderson' => 'Michael Anderson',
+        'Josh Norris' => 'Joshua Norris',
+        'Nathan Lgar' => 'Nathan Légaré',
     ];
 }
 
@@ -205,7 +201,10 @@ function blendTwoWayRating(?int $nhlOvr, int $nhlGp, ?int $ahlOvr, int $ahlGp): 
 function findByNhlId(array $allPlayers, string $externalId): array {
     $matches = [];
     foreach ($allPlayers as $p) {
-        if (!empty($p['nhl_player_id']) && (string)$p['nhl_player_id'] === $externalId) {
+        $storedNhlId = (string)($p['nhl_id'] ?? '');
+        $linkedNhlId = (string)($p['nhl_player_id'] ?? '');
+        if (($storedNhlId !== '' && $storedNhlId === $externalId) ||
+            ($linkedNhlId !== '' && $linkedNhlId === $externalId)) {
             $matches[] = $p;
         }
     }
@@ -268,11 +267,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $msg = 'Could not read uploaded CSV file.';
     } else {
         $allP = $pdo->query("
-            SELECT player_id, nhl_player_id, first_name, last_name, position,
+            SELECT player_id, nhl_id, nhl_player_id, first_name, last_name, position,
                    ahl_ovr, ahl_gp, nhl_ovr, nhl_season_gp
             FROM players
             WHERE COALESCE(is_retired, FALSE) = FALSE
         ")->fetchAll(PDO::FETCH_ASSOC);
+
+        $retiredPlayers = $pdo->query("
+            SELECT player_id, nhl_id, nhl_player_id, first_name, last_name
+            FROM players
+            WHERE COALESCE(is_retired, FALSE) = TRUE
+        ")->fetchAll(PDO::FETCH_ASSOC);
+        $retiredNhlNameMap = [];
+        $retiredNhlIdMap = [];
+        foreach ($retiredPlayers as $retiredPlayer) {
+            $retiredKey = cleanNhlName((string)$retiredPlayer['first_name'] . ' ' . (string)$retiredPlayer['last_name']);
+            $retiredNhlNameMap[$retiredKey][] = $retiredPlayer;
+            foreach (['nhl_id', 'nhl_player_id'] as $idField) {
+                if (!empty($retiredPlayer[$idField])) {
+                    $retiredNhlIdMap[(string)$retiredPlayer[$idField]][] = $retiredPlayer;
+                }
+            }
+        }
 
         $nameMap = [];
         $nhlNameMap = [];
@@ -402,6 +418,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
 
                     $gp = (int)($row[$colIdx['gp'] ?? 3] ?? 0);
+                    if ($gp <= 0) continue; // No new AHL games: preserve existing ratings.
                     $gaa = (float)($row[$colIdx['gaa'] ?? 11] ?? 3.00);
                     $sa = (float)($row[$colIdx['sa'] ?? 18] ?? 0);
                     $svs = (float)($row[$colIdx['svs'] ?? 19] ?? 0);
@@ -444,6 +461,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
 
                     $gp = (int)($row[$colIdx['gp'] ?? 4] ?? 0);
+                    if ($gp <= 0) continue; // No new AHL games: preserve existing ratings.
                     $g = (float)($row[$colIdx['g'] ?? 5] ?? 0);
                     $a = (float)($row[$colIdx['a'] ?? 6] ?? 0);
                     $pm = (float)($row[$colIdx['+/-'] ?? 8] ?? 0);
@@ -532,6 +550,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 $matches = [];
                 $skipReason = '';
+                $isRetiredPlayer = false;
 
                 if (count($idMatches) === 1) {
                     $matches = $idMatches;
@@ -549,8 +568,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         . ($position ?: '(blank)') . ' does not uniquely identify one. Database positions: '
                         . implode(', ', $dbPositions);
                 } else {
-                    $skipReason = 'No database player has this normalized name or supported alias';
+                    $retiredIdMatches = ($externalId !== '') ? ($retiredNhlIdMap[$externalId] ?? []) : [];
+                    $retiredNameMatches = $retiredNhlNameMap[cleanNhlName($rawName)] ?? [];
+                    if (count($retiredIdMatches) === 1 || count($retiredNameMatches) === 1) {
+                        $isRetiredPlayer = true;
+                        $skipReason = 'Player is marked retired in the database; excluded from ratings updates';
+                    } else {
+                        $skipReason = 'No database player has this normalized name or supported alias';
+                    }
                 }
+
+                if ($isRetiredPlayer) continue;
 
                 $prospectMatches = [];
                 if (!$matches && !$idMatches && !$candidates) {
@@ -580,6 +608,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $gp = (int)mpValue($row, $colIdx, ['games_played'], 0);
                 $ice = (float)mpValue($row, $colIdx, ['icetime'], 0);
+                if ($gp <= 0 || $ice <= 0) continue; // No season stats: preserve existing ratings.
                 $hrs = $ice > 0 ? ($ice / 3600.0) : 0;
 
                 if ($fileType === 'goalies') {
@@ -636,7 +665,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 } else {
                     if (strtoupper($position) === 'G') continue;
-
+                    // Header names below match the supplied MoneyPuck export.
                     $goals = (float)mpValue($row, $colIdx, ['I_F_goals'], 0);
                     $a1 = (float)mpValue($row, $colIdx, ['I_F_primaryAssists'], 0);
                     $a2 = (float)mpValue($row, $colIdx, ['I_F_secondaryAssists'], 0);
@@ -731,7 +760,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $msg = "The CSV was read, but no player or prospect ratings were updated. Check that player names/positions match your database and that the file contains situation=all rows. Skipped {$skippedAmbiguous} ambiguous and {$skippedUnmatched} unmatched rows.";
         }
     }
-    }
+    } 
 }
 ?>
 <!DOCTYPE html>
