@@ -1,6 +1,6 @@
 <?php
 require_once 'cap_helper.php';
-
+require_once 'sim_alerts_helper.php';
 function ensureSimSchema(PDO $pdo): void {
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS league_settings (
@@ -533,14 +533,18 @@ function simulateSingleGame(PDO $pdo, int $gameId): array {
         $pStats[$sid]['pim']    = (mt_rand(1, 100) <= 14) ? 2 : 0;
     }
 
+    $injuryText = '';
     $allSkaters = array_merge($homeSkaters, $awaySkaters);
     if (!empty($allSkaters) && mt_rand(1, 100) <= 3) {
-        $victim = $allSkaters[array_rand($allSkaters)];
-        $days   = mt_rand(2, 10);
+        $victim     = $allSkaters[array_rand($allSkaters)];
+        $days       = mt_rand(2, 10);
+        $victimTeam = ($victim['team_id'] == $homeId) ? $game['home_abbr'] : $game['away_abbr'];
         $pdo->prepare("UPDATE players SET is_injured = TRUE, injury_days_remaining = ?, line_number = 99 WHERE player_id = ?")
             ->execute([$days, $victim['player_id']]);
-        $events[] = "[INJURY] {$victim['first_name']} {$victim['last_name']} suffered an injury ({$days} days).";
+        $injuryText = "{$victim['first_name']} {$victim['last_name']} ({$victimTeam}) — {$days} days";
+        $events[]   = "[INJURY] {$victim['first_name']} {$victim['last_name']} suffered an injury ({$days} days).";
     }
+
 
     $updGame = $pdo->prepare("
         UPDATE games SET
@@ -586,6 +590,7 @@ function simulateSingleGame(PDO $pdo, int $gameId): array {
 
     return [
         'ok'  => true,
+        'injury' => $injuryText,
         'msg' => "{$game['away_abbr']} {$awayScore} @ {$game['home_abbr']} {$homeScore}" . ($isSo ? ' (SO)' : ($isOt ? ' (OT)' : ''))
     ];
 }

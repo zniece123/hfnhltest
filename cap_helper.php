@@ -199,8 +199,8 @@ function getLeagueCapViolations(PDO $pdo): array {
         LEFT JOIN (
             SELECT team_id,
                    SUM(salary) AS pro_hit,
-                   SUM(CASE WHEN UPPER(COALESCE(position, '')) <> 'G' AND COALESCE(injury_days, 0) <= 0 THEN 1 ELSE 0 END) AS healthy_skaters,
-                   SUM(CASE WHEN UPPER(COALESCE(position, '')) = 'G' AND COALESCE(injury_days, 0) <= 0 THEN 1 ELSE 0 END) AS healthy_goalies
+                   SUM(CASE WHEN UPPER(COALESCE(position, '')) <> 'G' AND COALESCE(is_injured, FALSE) = FALSE THEN 1 ELSE 0 END) AS healthy_skaters,
+                   SUM(CASE WHEN UPPER(COALESCE(position, '')) = 'G' AND COALESCE(is_injured, FALSE) = FALSE THEN 1 ELSE 0 END) AS healthy_goalies
             FROM players
             WHERE UPPER(COALESCE(roster_status, 'PRO')) = 'PRO'
               AND COALESCE(is_retired, FALSE) = FALSE
@@ -297,6 +297,7 @@ function enforceCapComplianceBeforeSim(PDO $pdo, bool $sendEmails = true): strin
     return $headerMsg . "\n" . implode("\n", $summaryLines);
 }
 ?>
+
 
 
 
