@@ -12,25 +12,23 @@ $userId   = (int)$_SESSION['user_id'];
 $savedMsg = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email       = trim($_POST['email'] ?? '');
-    $notifyGames = isset($_POST['notify_games_simmed']) ? 1 : 0;
-    $notifyInj   = isset($_POST['notify_injuries']) ? 1 : 0;
-    $notifyTrade = isset($_POST['notify_trade_block']) ? 1 : 0;
+    $email        = trim($_POST['email'] ?? '');
+    $notifyGames  = isset($_POST['notify_games_simmed']) ? 1 : 0;
+    $notifyDigest = isset($_POST['notify_daily_digest']) ? 1 : 0;
 
     $upStmt = $pdo->prepare("
         UPDATE users
         SET email = :email,
             notify_games_simmed = :ng::boolean,
-            notify_injuries = :ni::boolean,
-            notify_trade_block = :nt::boolean
+            notify_injuries = :nd::boolean,
+            notify_trade_block = :nd::boolean
         WHERE user_id = :uid
     ");
     $upStmt->execute(array(
-        'email' => $email,
-        'ng'    => $notifyGames,
-        'ni'    => $notifyInj,
-        'nt'    => $notifyTrade,
-        'uid'   => $userId
+            'email' => $email,
+            'ng'    => $notifyGames,
+            'nd'    => $notifyDigest,
+            'uid'   => $userId
     ));
 
     $savedMsg = "Email & notification preferences updated!";
@@ -44,6 +42,8 @@ $stmt = $pdo->prepare("
 ");
 $stmt->execute(array($userId));
 $user = $stmt->fetch();
+
+$hasDigest = (!empty($user['notify_injuries']) || !empty($user['notify_trade_block']));
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -61,8 +61,10 @@ $user = $stmt->fetch();
         label.field-label { display: block; font-weight: bold; margin-bottom: 6px; color: #e2e8f0; }
         input[type=email] { width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #fff; font-size: 1em; box-sizing: border-box; margin-bottom: 22px; }
         .toggle-row { display: flex; align-items: flex-start; gap: 12px; padding: 14px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; margin-bottom: 12px; cursor: pointer; }
+        .toggle-row.locked { border-color: #7c2d12; background: #17121e; cursor: not-allowed; }
         .toggle-row input[type=checkbox] { width: 18px; height: 18px; margin-top: 2px; accent-color: #38bdf8; }
         .toggle-title { font-weight: bold; color: #f8fafc; display: block; }
+        .badge-req { background: #991b1b; color: #fecaca; border: 1px solid #ef4444; font-size: 0.72em; padding: 2px 6px; border-radius: 4px; margin-left: 6px; text-transform: uppercase; vertical-align: middle; }
         .toggle-desc { color: #94a3b8; font-size: 0.88em; margin-top: 3px; display: block; }
         button { background: #0284c7; color: #fff; border: none; padding: 12px 24px; border-radius: 6px; font-weight: bold; font-size: 1em; cursor: pointer; margin-top: 10px; }
         button:hover { background: #0369a1; }
@@ -73,7 +75,10 @@ $user = $stmt->fetch();
 
 <div class="card">
     <h1>Email &amp; Alert Preferences</h1>
-    <div class="sub">GM Account: <strong><?= htmlspecialchars($user['username']) ?></strong> (<?= htmlspecialchars($user['team_name'] ?? 'Commissioner') ?>)</div>
+    <div class="sub">
+        GM Account: <strong><?= htmlspecialchars($user['username']) ?></strong> (<?= htmlspecialchars($user['team_name'] ?? 'Commissioner') ?>)<br>
+        <small>All league notifications are sent from <strong>hfnhl.alerts@gmail.com</strong>.</small>
+    </div>
 
     <?php if ($savedMsg): ?>
         <div class="alert"><?= htmlspecialchars($savedMsg) ?></div>
@@ -86,25 +91,25 @@ $user = $stmt->fetch();
         <label class="toggle-row">
             <input type="checkbox" name="notify_games_simmed" <?= !empty($user['notify_games_simmed']) ? 'checked' : '' ?>>
             <span>
-                    <span class="toggle-title">Games Simmed &amp; Daily Scoreboard</span>
-                    <span class="toggle-desc">Receive an email summary whenever a night of HFNHL games finishes simulating.</span>
-                </span>
+                <span class="toggle-title">1. Daily Games Simmed &amp; Scoreboard</span>
+                <span class="toggle-desc">Receive an email summary with all final scores whenever a day of HFNHL games finishes simulating.</span>
+            </span>
         </label>
 
         <label class="toggle-row">
-            <input type="checkbox" name="notify_injuries" <?= !empty($user['notify_injuries']) ? 'checked' : '' ?>>
+            <input type="checkbox" name="notify_daily_digest" <?= $hasDigest ? 'checked' : '' ?>>
             <span>
-                    <span class="toggle-title">Team Injury &amp; Recovery Updates</span>
-                    <span class="toggle-desc">Get alerted immediately if one of your players is injured or cleared to return so you can adjust your lines.</span>
-                </span>
+                <span class="toggle-title">2. Daily League Activity Digest (Injuries, Waivers &amp; Trade Block)</span>
+                <span class="toggle-desc">Receive a daily roundup of injury updates/recoveries, players placed on waivers, and players added to the trade block.</span>
+            </span>
         </label>
 
-        <label class="toggle-row">
-            <input type="checkbox" name="notify_trade_block" <?= !empty($user['notify_trade_block']) ? 'checked' : '' ?>>
+        <label class="toggle-row locked">
+            <input type="checkbox" checked disabled>
             <span>
-                    <span class="toggle-title">League Trade Block Alerts</span>
-                    <span class="toggle-desc">Receive batch digest emails when another GM updates their Trade Block or shopping list.</span>
-                </span>
+                <span class="toggle-title">3. Cap &amp; Roster Compliance Alerts <span class="badge-req">Required</span></span>
+                <span class="toggle-desc">Mandatory alert sent automatically if your team is over the salary cap, below the cap floor, or has an illegal roster blocking the sim.</span>
+            </span>
         </label>
 
         <button type="submit">Save Notification Preferences</button>
@@ -112,4 +117,5 @@ $user = $stmt->fetch();
 </div>
 </body>
 </html>
+
 

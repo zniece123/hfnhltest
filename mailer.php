@@ -1,17 +1,30 @@
 <?php
 function sendLeagueEmail($toList, $subject, $body) {
-    $smtpUser = getenv('SMTP_USER') ?: 'hfnhl.alerts@gmail.com';
-    $smtpPass = getenv('SMTP_PASS') ?: '';
+    global $pdo;
 
-    if (empty($toList) || empty($smtpPass) || $smtpPass === 'YOUR_16_LETTER_APP_PASSWORD') {
-        return;
+    $smtpUser = getenv('SMTP_USER') ?: 'hfnhl.alerts@gmail.com';
+    $smtpPass = getenv('SMTP_PASS') ?: 'bqqf vxyy fotc xjnl';
+
+    if ($smtpPass === '' && isset($pdo) && $pdo instanceof PDO) {
+        try {
+            $st = $pdo->query("SELECT setting_value FROM league_settings WHERE setting_key = 'smtp_app_password' LIMIT 1");
+            $dbPass = $st->fetchColumn();
+            if ($dbPass) $smtpPass = trim($dbPass);
+        } catch (Exception $e) {}
     }
 
-    $recipients = array_unique(array_filter(array_map('trim', (array)$toList), fn($e) => filter_var($e, FILTER_VALIDATE_EMAIL)));
-    if (empty($recipients)) return;
+    if (empty($toList) || empty($smtpPass) || $smtpPass === 'YOUR_16_LETTER_APP_PASSWORD') {
+        return false;
+    }
+
+    $recipients = array_unique(array_filter(
+        array_map('trim', (array)$toList),
+        fn($e) => filter_var($e, FILTER_VALIDATE_EMAIL)
+    ));
+    if (empty($recipients)) return false;
 
     $fp = @stream_socket_client("tcp://://gmail.com", $errno, $errstr, 15);
-    if (!$fp) return;
+    if (!$fp) return false;
 
     $read = function() use ($fp) {
         $data = '';
@@ -29,11 +42,19 @@ function sendLeagueEmail($toList, $subject, $body) {
     $read();
     $cmd("EHLO localhost");
     $cmd("STARTTLS");
-    stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
+    if (!@stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) {
+        fclose($fp);
+        return false;
+    }
     $cmd("EHLO localhost");
     $cmd("AUTH LOGIN");
     $cmd(base64_encode($smtpUser));
-    $cmd(base64_encode($smtpPass));
+    $authResp = $cmd(base64_encode($smtpPass));
+
+    if (strpos($authResp, '235') === false) {
+        fclose($fp);
+        return false;
+    }
 
     foreach ($recipients as $to) {
         $cmd("MAIL FROM:<{$smtpUser}>");
@@ -48,7 +69,9 @@ function sendLeagueEmail($toList, $subject, $body) {
 
     $cmd("QUIT");
     fclose($fp);
+    return true;
 }
 ?>
+
 
 

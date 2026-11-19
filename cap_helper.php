@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__ . '/mailer.php';
+
 function getLeagueCapLimits(PDO $pdo): array {
     $seasonYear  = 2026;
     $seasonLabel = '2026-27';
@@ -51,6 +53,7 @@ function getTeamRetainedCap(PDO $pdo, int $teamId): int {
         return 0;
     }
 }
+
 function getTeamBuyoutCap(PDO $pdo, int $teamId): int {
     try {
         $stmt = $pdo->prepare("
@@ -143,7 +146,6 @@ function advanceLeagueCapForOffseason(PDO $pdo, bool $isSubsequentSeason): array
         'min'          => (int)$row['cap_min'],
     );
 }
-
 function getTeamCapSummary(PDO $pdo, int $teamId): array {
     $limits = getLeagueCapLimits($pdo);
 
@@ -159,7 +161,7 @@ function getTeamCapSummary(PDO $pdo, int $teamId): array {
 
     $retainedCap = getTeamRetainedCap($pdo, $teamId);
     $buyoutCap   = getTeamBuyoutCap($pdo, $teamId);
-    $totalCapHit = $proCapHit + $retainedCap;
+    $totalCapHit = $proCapHit + $retainedCap + $buyoutCap;
 
     $capSpace   = $limits['max'] - $totalCapHit;
     $underFloor = max(0, $limits['min'] - $totalCapHit);
@@ -170,6 +172,7 @@ function getTeamCapSummary(PDO $pdo, int $teamId): array {
         'cap_min'         => $limits['min'],
         'pro_cap_hit'     => $proCapHit,
         'retained_cap'    => $retainedCap,
+        'buyout_cap'      => $buyoutCap,
         'cap_hit'         => $totalCapHit,
         'cap_space'       => $capSpace,
         'available_space' => $capSpace,
@@ -184,15 +187,20 @@ function getLeagueCapViolations(PDO $pdo): array {
     $violations = array();
 
     $sql = "
-                SELECT t.team_id,
+        SELECT t.team_id,
                t.abbreviation,
                t.name AS team_name,
                COALESCE(p_cap.pro_hit, 0) + COALESCE(r_cap.ret_hit, 0) + COALESCE(b_cap.buy_hit, 0) AS cap_hit,
+               COALESCE(p_cap.healthy_skaters, 0) AS healthy_skaters,
+               COALESCE(p_cap.healthy_goalies, 0) AS healthy_goalies,
                u.email AS gm_email,
                u.username AS gm_name
         FROM teams t
         LEFT JOIN (
-            SELECT team_id, SUM(salary) AS pro_hit
+            SELECT team_id,
+                   SUM(salary) AS pro_hit,
+                   SUM(CASE WHEN UPPER(COALESCE(position, '')) <> 'G' AND COALESCE(injury_days, 0) <= 0 THEN 1 ELSE 0 END) AS healthy_skaters,
+                   SUM(CASE WHEN UPPER(COALESCE(position, '')) = 'G' AND COALESCE(injury_days, 0) <= 0 THEN 1 ELSE 0 END) AS healthy_goalies
             FROM players
             WHERE UPPER(COALESCE(roster_status, 'PRO')) = 'PRO'
               AND COALESCE(is_retired, FALSE) = FALSE
@@ -215,21 +223,31 @@ function getLeagueCapViolations(PDO $pdo): array {
     ";
 
     foreach ($pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $capHit = (int)$row['cap_hit'];
+        $capHit  = (int)$row['cap_hit'];
+        $skaters = (int)$row['healthy_skaters'];
+        $goalies = (int)$row['healthy_goalies'];
+        $issues  = array();
+
         if ($capHit > $limits['max']) {
-            $violations[] = array(
-                'team_id'      => (int)$row['team_id'],
-                'abbreviation' => $row['abbreviation'],
-                'team_name'    => $row['team_name'],
-                'gm_name'      => $row['gm_name'] ?: 'GM',
-                'gm_email'     => trim($row['gm_email'] ?? ''),
-                'cap_hit'      => $capHit,
-                'type'         => 'OVER_CEILING',
-                'diff'         => $capHit - $limits['max'],
-                'limit'        => $limits['max'],
-                'season_label' => $limits['season_label'],
-            );
+            $diffFmt  = '$' . number_format($capHit - $limits['max']);
+            $limFmt   = '$' . number_format($limits['max']);
+            $hitFmt   = '$' . number_format($capHit);
+            $issues[] = "OVER the {$limits['season_label']} Cap Ceiling ({$limFmt}) by {$diffFmt} (Current Cap Hit: {$hitFmt})";
         } elseif ($capHit < $limits['min']) {
+            $diffFmt  = '$' . number_format($limits['min'] - $capHit);
+            $limFmt   = '$' . number_format($limits['min']);
+            $hitFmt   = '$' . number_format($capHit);
+            $issues[] = "UNDER the {$limits['season_label']} Cap Floor ({$limFmt}) by {$diffFmt} (Current Cap Hit: {$hitFmt})";
+        }
+
+        if ($skaters < 18) {
+            $issues[] = "Short on healthy NHL skaters ({$skaters}/18 minimum required)";
+        }
+        if ($goalies < 2) {
+            $issues[] = "Short on healthy NHL goalies ({$goalies}/2 minimum required)";
+        }
+
+        if (!empty($issues)) {
             $violations[] = array(
                 'team_id'      => (int)$row['team_id'],
                 'abbreviation' => $row['abbreviation'],
@@ -237,10 +255,8 @@ function getLeagueCapViolations(PDO $pdo): array {
                 'gm_name'      => $row['gm_name'] ?: 'GM',
                 'gm_email'     => trim($row['gm_email'] ?? ''),
                 'cap_hit'      => $capHit,
-                'type'         => 'UNDER_FLOOR',
-                'diff'         => $limits['min'] - $capHit,
-                'limit'        => $limits['min'],
-                'season_label' => $limits['season_label'],
+                'issues'       => $issues,
+                'status_text'  => implode('; ', $issues),
             );
         }
     }
@@ -258,40 +274,30 @@ function enforceCapComplianceBeforeSim(PDO $pdo, bool $sendEmails = true): strin
     $emailedCount = 0;
 
     foreach ($violations as $v) {
-        $teamStr = "{$v['team_name']} ({$v['abbreviation']})";
-        $hitFmt  = '$' . number_format($v['cap_hit']);
-        $diffFmt = '$' . number_format($v['diff']);
-        $limFmt  = '$' . number_format($v['limit']);
-
-        if ($v['type'] === 'OVER_CEILING') {
-            $statusText = "OVER the {$v['season_label']} Cap Ceiling ({$limFmt}) by {$diffFmt} (Current Cap Hit: {$hitFmt})";
-        } else {
-            $statusText = "UNDER the {$v['season_label']} Cap Floor ({$limFmt}) by {$diffFmt} (Current Cap Hit: {$hitFmt})";
-        }
-
-        $summaryLines[] = "• {$teamStr}: {$statusText}";
+        $teamStr        = "{$v['team_name']} ({$v['abbreviation']})";
+        $summaryLines[] = "• {$teamStr}: {$v['status_text']}";
 
         if ($sendEmails && !empty($v['gm_email']) && filter_var($v['gm_email'], FILTER_VALIDATE_EMAIL)) {
-            $subject = "[HFNHL Action Required] {$v['team_name']} Salary Cap Violation";
+            $subject = "[HFNHL Action Required] {$v['team_name']} Cap / Roster Compliance";
             $body    = "Hello {$v['gm_name']},\n\n"
-                . "The HFNHL simulation cannot run because {$teamStr} is currently {$statusText}.\n\n"
-                . "Please log into the HFNHL portal immediately to adjust your NHL (PRO) roster via waivers, AHL demotions, trades, or free agent signings so your team is cap-compliant before the next sim.\n\n"
-                . "— HFNHL Commissioner Office";
+                . "The HFNHL simulation cannot run because {$teamStr} is currently non-compliant:\n"
+                . " - " . implode("\n - ", $v['issues']) . "\n\n"
+                . "Please log into the HFNHL portal immediately to adjust your NHL (PRO) roster via call-ups, waivers, AHL demotions, trades, or free agent signings so your team is compliant before the next sim.\n\n"
+                . "— HFNHL League Office";
 
-            $headers = "From: noreply@hfnhl.org\r\n"
-                . "Content-Type: text/plain; charset=UTF-8\r\n";
-
-            if (@mail($v['gm_email'], $subject, $body, $headers)) {
+            if (sendLeagueEmail($v['gm_email'], $subject, $body)) {
                 $emailedCount++;
             }
         }
     }
 
-    $headerMsg = "SIM HALTED — " . count($violations) . " team(s) are not salary cap compliant"
+    $headerMsg = "SIM HALTED — " . count($violations) . " team(s) are not cap or roster compliant"
         . ($emailedCount > 0 ? " (Alert emails sent to {$emailedCount} GM(s)):" : ":");
 
     return $headerMsg . "\n" . implode("\n", $summaryLines);
 }
+?>
+
 
 
 
