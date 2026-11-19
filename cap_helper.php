@@ -51,6 +51,19 @@ function getTeamRetainedCap(PDO $pdo, int $teamId): int {
         return 0;
     }
 }
+function getTeamBuyoutCap(PDO $pdo, int $teamId): int {
+    try {
+        $stmt = $pdo->prepare("
+            SELECT COALESCE(SUM(buyout_cap_hit), 0)
+            FROM team_buyouts
+            WHERE team_id = ? AND years_remaining > 0
+        ");
+        $stmt->execute(array($teamId));
+        return (int)$stmt->fetchColumn();
+    } catch (Exception $e) {
+        return 0;
+    }
+}
 
 function validateSalaryRetention(PDO $pdo, int $retainingTeamId, int $playerId, float $percent, int $newRetainedAmount): string {
     if ($percent <= 0 || $percent > 50) {
@@ -119,6 +132,8 @@ function advanceLeagueCapForOffseason(PDO $pdo, bool $isSubsequentSeason): array
     try {
         $pdo->exec("UPDATE retained_salaries SET years_remaining = years_remaining - 1");
         $pdo->exec("DELETE FROM retained_salaries WHERE years_remaining <= 0");
+        $pdo->exec("UPDATE team_buyouts SET years_remaining = years_remaining - 1");
+        $pdo->exec("DELETE FROM team_buyouts WHERE years_remaining <= 0");
     } catch (Exception $e) {}
 
     return array(
@@ -143,6 +158,7 @@ function getTeamCapSummary(PDO $pdo, int $teamId): array {
     $proCapHit = (int)$stmt->fetchColumn();
 
     $retainedCap = getTeamRetainedCap($pdo, $teamId);
+    $buyoutCap   = getTeamBuyoutCap($pdo, $teamId);
     $totalCapHit = $proCapHit + $retainedCap;
 
     $capSpace   = $limits['max'] - $totalCapHit;
@@ -168,10 +184,10 @@ function getLeagueCapViolations(PDO $pdo): array {
     $violations = array();
 
     $sql = "
-        SELECT t.team_id,
+                SELECT t.team_id,
                t.abbreviation,
                t.name AS team_name,
-               COALESCE(p_cap.pro_hit, 0) + COALESCE(r_cap.ret_hit, 0) AS cap_hit,
+               COALESCE(p_cap.pro_hit, 0) + COALESCE(r_cap.ret_hit, 0) + COALESCE(b_cap.buy_hit, 0) AS cap_hit,
                u.email AS gm_email,
                u.username AS gm_name
         FROM teams t
@@ -188,6 +204,12 @@ function getLeagueCapViolations(PDO $pdo): array {
             WHERE years_remaining > 0
             GROUP BY retaining_team_id
         ) r_cap ON r_cap.retaining_team_id = t.team_id
+        LEFT JOIN (
+            SELECT team_id, SUM(buyout_cap_hit) AS buy_hit
+            FROM team_buyouts
+            WHERE years_remaining > 0
+            GROUP BY team_id
+        ) b_cap ON b_cap.team_id = t.team_id
         LEFT JOIN users u ON u.team_id = t.team_id
         ORDER BY t.name ASC
     ";
