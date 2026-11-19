@@ -28,6 +28,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($isTeamGM || $isAdminUser) && !emp
     $moveAct = $_POST['gm_roster_action'];
     $pid     = (int)($_POST['player_id'] ?? 0);
 
+    if ($moveAct === 'bulk_send_to_ahl' || $moveAct === 'bulk_call_up_pro') {
+        $selectedIds = array_filter(array_map('intval', (array)($_POST['selected_player_ids'] ?? array())));
+
+        if (empty($selectedIds)) {
+            $rosterAlertType = 'error';
+            $rosterMsg = "Please check at least one player first.";
+        } else {
+            $movedNames  = array();
+            $waiverNames = array();
+
+            $chkStmt = $pdo->prepare("SELECT * FROM players WHERE player_id = ? AND team_id = ?");
+            $updStmt = $pdo->prepare("
+                UPDATE players
+                SET roster_status = ?,
+                    line_number   = 99
+                WHERE player_id = ? AND team_id = ?
+            ");
+
+            foreach ($selectedIds as $selId) {
+                $chkStmt->execute(array($selId, $team_id));
+                $tp = $chkStmt->fetch(PDO::FETCH_ASSOC);
+                if (!$tp) continue;
+
+                $pName = trim(($tp['first_name'] ?? '') . ' ' . ($tp['last_name'] ?? ''));
+
+                if ($moveAct === 'bulk_send_to_ahl') {
+                    $updStmt->execute(array('AHL', $selId, $team_id));
+                    $movedNames[] = $pName;
+                    if (requiresWaivers($tp)) {
+                        $waiverNames[] = $pName;
+                    }
+                } else {
+                    $updStmt->execute(array('PRO', $selId, $team_id));
+                    $movedNames[] = $pName;
+                }
+            }
+
+            if (!empty($movedNames)) {
+                if ($moveAct === 'bulk_send_to_ahl') {
+                    if (!empty($waiverNames)) {
+                        $rosterAlertType = 'warning';
+                        $rosterMsg = "Sent " . count($movedNames) . " player(s) to the AHL: " . implode(', ', $movedNames)
+                                . ". WAIVER NOTICE: " . implode(', ', $waiverNames) . " require waivers!";
+                    } else {
+                        $rosterAlertType = 'info';
+                        $rosterMsg = "Sent " . count($movedNames) . " waiver-exempt player(s) to the AHL: " . implode(', ', $movedNames) . ".";
+                    }
+                } else {
+                    $rosterAlertType = 'info';
+                    $rosterMsg = "Called up " . count($movedNames) . " player(s) to the NHL (Healthy Scratch / Line 99): " . implode(', ', $movedNames) . ".";
+                }
+            }
+        }
+    }
+
     if ($pid > 0) {
         $chkStmt = $pdo->prepare("SELECT * FROM players WHERE player_id = ? AND team_id = ?");
         $chkStmt->execute(array($pid, $team_id));
@@ -562,13 +617,35 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL', $
         echo '<p style="color:#94a3b8;">No players assigned to this roster.</p>';
         return;
     }
+
+    $formId    = $isPro ? 'bulk_nhl_form' : 'bulk_ahl_form';
+    $bulkAct   = $isPro ? 'bulk_send_to_ahl' : 'bulk_call_up_pro';
+    $btnLabel  = $isPro ? 'Send Checked to AHL' : 'Call Up Checked to NHL';
+    $btnClass  = $isPro ? 'btn-move-down' : 'btn-move-up';
+    $isCommish = (!empty($_SESSION['is_commish']) || !empty($_SESSION['is_admin']));
+
+    if ($isTeamGM) {
+        echo '<form id="' . $formId . '" method="POST" style="margin-bottom:8px; display:flex; align-items:center; gap:10px;">
+                <input type="hidden" name="gm_roster_action" value="' . $bulkAct . '">
+                <button type="submit" class="btn-move ' . $btnClass . '" style="padding:6px 14px; font-size:0.86em;">
+                    ' . $btnLabel . '
+                </button>
+                <span style="color:#94a3b8; font-size:0.82em;">Select players using the checkboxes below</span>
+              </form>';
+    }
+
     echo '<table>
-        <tr>
-            <th style="width:90px;">Line</th><th>Player</th><th>Pos</th><th>OVR</th>
+        <tr>';
+    if ($isTeamGM) {
+        echo '<th style="width:36px; text-align:center;">
+                <input type="checkbox" title="Select All" onclick="document.querySelectorAll(\'.chk-' . $formId . '\').forEach(cb => cb.checked = this.checked);">
+              </th>';
+    }
+    echo '  <th style="width:90px;">Line</th><th>Player</th><th>Pos</th><th>OVR</th>
             <th>SK</th><th>SH</th><th>PA</th><th>DF</th><th>PH</th>
             <th>Contract</th><th>Cond</th>';
     if ($isTeamGM) {
-        echo '<th style="width:135px; text-align:center;">Roster Move</th>';
+        echo '<th style="width:90px; text-align:center;">Actions</th>';
     }
     echo '</tr>';
 
@@ -588,7 +665,13 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL', $
             $retSub   = '<div style="font-size:0.78em; color:#c084fc; margin-top:2px;">Retained: $' . number_format($retInfo['total_retained']) . '</div>';
         }
 
-        echo '<tr>
+        echo '<tr>';
+        if ($isTeamGM) {
+            echo '<td style="text-align:center;">
+                    <input type="checkbox" class="chk-' . $formId . '" form="' . $formId . '" name="selected_player_ids[]" value="' . $pid . '">
+                  </td>';
+        }
+        echo '
             <td>' . getLineLabel($p, $isPro) . '</td>
             <td><strong>' . htmlspecialchars($fullName) . '</strong>' . $inj . $wvrBadge . $retBadge . '</td>
             <td>' . htmlspecialchars($p['position']) . '</td>
@@ -602,64 +685,53 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL', $
             <td>' . (int)$p['condition'] . '%</td>';
 
         if ($isTeamGM) {
-            $jsName = htmlspecialchars($fullName, ENT_QUOTES);
-            $jsAhl  = htmlspecialchars($ahlName, ENT_QUOTES);
+            $jsName    = htmlspecialchars($fullName, ENT_QUOTES);
+            $canBuyout = ((int)$p['contract_years'] > 0 && (int)$p['salary'] > 0);
+
             echo '<td style="text-align:center;">';
-            if ($isPro) {
-                $onsubmit = $needsWvr
-                        ? "return confirm('WAIVER WARNING: {$jsName} requires WAIVERS to be sent down to {$jsAhl}. Continue?');"
-                        : "return true;";
-                $btnClass = $needsWvr ? 'btn-move-waiver' : 'btn-move-down';
-                echo '<form method="POST" style="margin:0;" onsubmit="' . $onsubmit . '">
-                        <input type="hidden" name="player_id" value="' . $pid . '">
-                        <input type="hidden" name="gm_roster_action" value="send_to_ahl">
-                        <button type="submit" class="btn-move ' . $btnClass . '">
-                            Send Down' . ($needsWvr ? ' ⚠️' : '') . '
-                        </button>
-                      </form>';
+            if ($canBuyout || $isCommish) {
+                echo '<details class="more-menu">
+                        <summary>More ▾</summary>
+                        <div class="more-dropdown">';
+
+                if ($canBuyout) {
+                    $bAge   = (int)($p['age'] ?? 26);
+                    $bRatio = ($bAge < 26) ? (1/3) : (2/3);
+                    $bYrs   = (int)$p['contract_years'] * 2;
+                    $bHit   = number_format(round(((int)$p['salary'] * (int)$p['contract_years'] * $bRatio) / $bYrs));
+                    $bPct   = ($bAge < 26) ? '1/3' : '2/3';
+
+                    echo '<form method="POST" style="margin:0;" onsubmit="return confirm(\'NHL BUYOUT (' . $bPct . ' rule): Buy out ' . $jsName . ' for $' . $bHit . '/yr over ' . $bYrs . ' years?\');">
+                            <input type="hidden" name="player_id" value="' . $pid . '">
+                            <input type="hidden" name="gm_roster_action" value="buyout_player">
+                            <button type="submit" style="color:#fca5a5;">💸 Buy Out</button>
+                          </form>';
+                }
+
+                if ($isCommish) {
+                    echo '<form method="POST" style="margin:0;" onsubmit="return confirm(\'Place ' . $jsName . ' on LTIR / Injury Reserve?\');">
+                            <input type="hidden" name="player_id" value="' . $pid . '">
+                            <input type="hidden" name="commish_player_action" value="send_ltir">
+                            <button type="submit" style="color:#c4b5fd;">🏥 Move to LTIR</button>
+                          </form>';
+
+                    echo '<form method="POST" style="margin:0;" onsubmit="return confirm(\'Move ' . $jsName . ' to Europe Rights Owned?\');">
+                            <input type="hidden" name="player_id" value="' . $pid . '">
+                            <input type="hidden" name="commish_player_action" value="send_euro">
+                            <button type="submit" style="color:#5eead4;">🇪🇺 Move to Europe</button>
+                          </form>';
+
+                    echo '<form method="POST" style="margin:0;" onsubmit="return confirm(\'RETIRE ' . $jsName . ' from the sim?\');">
+                            <input type="hidden" name="player_id" value="' . $pid . '">
+                            <input type="hidden" name="commish_player_action" value="retire_player">
+                            <button type="submit" style="color:#94a3b8;">🏁 Retire Player</button>
+                          </form>';
+                }
+
+                echo '  </div>
+                      </details>';
             } else {
-                echo '<form method="POST" style="margin:0;">
-                        <input type="hidden" name="player_id" value="' . $pid . '">
-                        <input type="hidden" name="gm_roster_action" value="call_up_pro">
-                        <button type="submit" class="btn-move btn-move-up">
-                            Call Up
-                        </button>
-                      </form>';
-            }
-            if ((int)$p['contract_years'] > 0 && (int)$p['salary'] > 0) {
-                $bAge   = (int)($p['age'] ?? 26);
-                $bRatio = ($bAge < 26) ? (1/3) : (2/3);
-                $bYrs   = (int)$p['contract_years'] * 2;
-                $bHit   = number_format(round(((int)$p['salary'] * (int)$p['contract_years'] * $bRatio) / $bYrs));
-                $bPct   = ($bAge < 26) ? '1/3' : '2/3';
-
-                echo '<form method="POST" style="margin-top:4px;" onsubmit="return confirm(\'NHL BUYOUT (' . $bPct . ' rule): Buy out ' . $jsName . ' for $' . $bHit . '/yr over ' . $bYrs . ' years?\');">
-                        <input type="hidden" name="player_id" value="' . $pid . '">
-                        <input type="hidden" name="gm_roster_action" value="buyout_player">
-                        <button type="submit" class="btn-move" style="background:#991b1b;">Buy Out</button>
-                      </form>';
-            }
-            if (!empty($_SESSION['is_commish']) || !empty($_SESSION['is_admin'])) {
-                echo '<div style="margin-top:5px; display:flex; gap:3px; justify-content:center; flex-wrap:wrap;">';
-
-                echo '<form method="POST" style="margin:0;" onsubmit="return confirm(\'Place ' . $jsName . ' on LTIR / Injury Reserve (preserves contract & removes from active cap)?\');">
-                        <input type="hidden" name="player_id" value="' . $pid . '">
-                        <input type="hidden" name="commish_player_action" value="send_ltir">
-                        <button type="submit" class="btn-move" style="background:#6d28d9; padding:3px 6px; font-size:0.72em;">LTIR</button>
-                      </form>';
-
-                echo '<form method="POST" style="margin:0;" onsubmit="return confirm(\'Move ' . $jsName . ' to Europe Rights Owned (preserves contract & removes from active cap)?\');">
-                        <input type="hidden" name="player_id" value="' . $pid . '">
-                        <input type="hidden" name="commish_player_action" value="send_euro">
-                        <button type="submit" class="btn-move" style="background:#0f766e; padding:3px 6px; font-size:0.72em;">Euro</button>
-                      </form>';
-
-                echo '<form method="POST" style="margin:0;" onsubmit="return confirm(\'RETIRE ' . $jsName . ' from the sim permanently?\');">
-                        <input type="hidden" name="player_id" value="' . $pid . '">
-                        <input type="hidden" name="commish_player_action" value="retire_player">
-                        <button type="submit" class="btn-move" style="background:#334155; padding:3px 6px; font-size:0.72em;">Retire</button>
-                      </form>';
-                echo '</div>';
+                echo '<span style="color:#475569;">—</span>';
             }
             echo '</td>';
         }
@@ -667,6 +739,7 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL', $
     }
     echo '</table>';
 }
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
