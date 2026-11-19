@@ -253,7 +253,7 @@ $activeRetentions = $pdo->query("
         <a class="tool-link" href="playoffs.php">Sim Center, Playoffs &amp; Offseason Mode</a>
         <a class="tool-link" href="import_nhl_schedule.php">Import 84-Game NHL Schedule</a>
         <a class="tool-link" href="create_player.php">Create Rookie / Custom Player</a>
-        <a class="tool-link" href="update_moneypuck_ratings.php">MoneyPuck Annual Ratings Updater</a>
+        <a class="tool-link" href="update_ratings.php">Annual Ratings Updater</a>
         <a class="tool-link" href="draft_import.php">Entry Draft Excel / CSV Importer</a>
     </div>
 </div>
