@@ -49,6 +49,53 @@ function cleanMpName(string $name): string {
     return preg_replace('/[^a-z0-9]/', '', strtolower(strtr($name, $map)));
 }
 
+function confirmedPlayerNameAliases(): array {
+    return [
+        'Oskar Bck' => 'Oskar Back',
+        'Zach Metsa' => 'Zachary Metsa',
+        'Fedor Svechkov' => 'Fyodor Svechkov',
+        'Aatu Rty' => 'Aatu Raty',
+        'Alexis Lafrenire' => 'Alexis Lafreniere',
+        'Mathew Dumba' => 'Matt Dumba',
+        'Isac Lundestrm' => 'Isac Lundestrom',
+        'Olli Mtt' => 'Olli Maatta',
+        'Bo Groulx' => 'Benoit-Olivier Groulx',
+        'Tony DeAngelo' => 'Anthony DeAngelo',
+        'JJ Peterka' => 'John-Jason Peterka',
+        'Max Crozier' => 'Maxwell Crozier',
+        'Nick Robertson' => 'Nicholas Robertson',
+        'Tommy Novak' => 'Thomas Novak',
+        'Danil Zhilkin' => 'Danny Zhilkin',
+        'Josh Morrissey' => 'Joshua Morrissey',
+        'Matj Blmel' => 'Matej Blumel',
+        'Jake Middleton' => 'Jacob Middleton',
+        'Georgii Merkulov' => 'Georgi Merkulov',
+        'Joe Veleno' => 'Joseph Veleno',
+        'Charle-Edouard D\'Astous' => 'Charles-Edouard D\'Astous',
+        'Egor Chinakhov' => 'Yegor Chinakhov',
+        'Alexander Petrovic' => 'Alex Petrovic',
+        'Michael Brandsegg-Nygrd' => 'Michael Brandsegg-Nygard',
+        'Sam Poulin' => 'Samuel Poulin',
+        'Matty Beniers' => 'Matthew Beniers',
+        'Zachary Aston-Reese' => 'Zach Aston-Reese',
+        'Tim Stutzle' => 'Tim Stützle',
+        'Juraj Slafkovsky' => 'Juraj Slafkovský',
+        'Jonathan Lekkerimaki' => 'Jonathan Lekkerimäki',
+    ];
+}
+
+function canonicalMpNameKey(string $name): string {
+    static $aliases = null;
+    if ($aliases === null) {
+        $aliases = [];
+        foreach (confirmedPlayerNameAliases() as $source => $target) {
+            $aliases[cleanMpName($source)] = cleanMpName($target);
+        }
+    }
+    $key = cleanMpName($name);
+    return $aliases[$key] ?? $key;
+}
+
 function cleanNhlName(string $name): string {
     $name = trim($name);
     if (class_exists('Normalizer')) {
@@ -64,6 +111,18 @@ function cleanNhlName(string $name): string {
     $name = strtolower($name);
     $name = preg_replace('/[^a-z0-9]+/', '', $name);
     return $name ?? '';
+}
+
+function canonicalNhlNameKey(string $name): string {
+    static $aliases = null;
+    if ($aliases === null) {
+        $aliases = [];
+        foreach (confirmedPlayerNameAliases() as $source => $target) {
+            $aliases[cleanNhlName($source)] = cleanNhlName($target);
+        }
+    }
+    $key = cleanNhlName($name);
+    return $aliases[$key] ?? $key;
 }
 
 function findNhlAliasMatches(array $allPlayers, string $rawName): array {
@@ -148,7 +207,7 @@ function normalizeMpPosition(string $position): string {
 function findUniqueNamePositionMatch(array $nameMap, string $key, string $position): array {
     $matches = [];
     foreach (($nameMap[$key] ?? []) as $p) {
-        if (strtoupper(trim((string)$p['position'])) === strtoupper(trim($position))) {
+        if (normalizeMpPosition((string)$p['position']) === normalizeMpPosition($position)) {
             $matches[] = $p;
         }
     }
@@ -194,6 +253,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $nhlNameMap[$nhlKey][] = $p;
         }
 
+        $allProspects = $pdo->query("
+            SELECT pr.prospect_id, pr.first_name, pr.last_name, pr.position,
+                   COALESCE(r.ahl_ovr, NULL) AS ahl_ovr,
+                   COALESCE(r.ahl_gp, 0) AS ahl_gp,
+                   r.nhl_ovr, COALESCE(r.nhl_season_gp, 0) AS nhl_season_gp
+            FROM prospects pr
+            LEFT JOIN prospect_ratings r ON r.prospect_id = pr.prospect_id
+        ")->fetchAll(PDO::FETCH_ASSOC);
+        $prospectNameMap = [];
+        $prospectNhlNameMap = [];
+        foreach ($allProspects as $prospect) {
+            $pKey = cleanMpName((string)$prospect['first_name'] . (string)$prospect['last_name']);
+            $prospectNameMap[$pKey][] = $prospect;
+            $pNhlKey = cleanNhlName((string)$prospect['first_name'] . ' ' . (string)$prospect['last_name']);
+            $prospectNhlNameMap[$pNhlKey][] = $prospect;
+        }
+
         $linkNhlId = $pdo->prepare("
             UPDATE players SET nhl_player_id = ?
             WHERE player_id = ? AND (nhl_player_id IS NULL OR nhl_player_id = ?)
@@ -224,8 +300,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             SET overall_rating = ?, goaltending = ?, ahl_ovr = ?, ahl_gp = ?
             WHERE player_id = ?
         ");
-
+        $updProspectSkater = $pdo->prepare("
+            INSERT INTO prospect_ratings
+                (prospect_id, skating, shooting, passing, defense, physical, overall_rating, ahl_ovr, ahl_gp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (prospect_id) DO UPDATE SET
+                skating = EXCLUDED.skating, shooting = EXCLUDED.shooting,
+                passing = EXCLUDED.passing, defense = EXCLUDED.defense,
+                physical = EXCLUDED.physical, overall_rating = EXCLUDED.overall_rating,
+                ahl_ovr = EXCLUDED.ahl_ovr, ahl_gp = EXCLUDED.ahl_gp,
+                last_updated = CURRENT_TIMESTAMP
+        ");
+        $updProspectGoalie = $pdo->prepare("
+            INSERT INTO prospect_ratings
+                (prospect_id, goaltending, overall_rating, ahl_ovr, ahl_gp)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (prospect_id) DO UPDATE SET
+                goaltending = EXCLUDED.goaltending, overall_rating = EXCLUDED.overall_rating,
+                ahl_ovr = EXCLUDED.ahl_ovr, ahl_gp = EXCLUDED.ahl_gp,
+                last_updated = CURRENT_TIMESTAMP
+        ");
         $updated = 0;
+        $updatedProspects = 0;
 
         if ($fileType === 'ahl_by_team') {
             $mode = '';
@@ -260,12 +356,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     stripos($rawName, 'BENCH') !== false ||
                     stripos($rawName, 'Empty Net') !== false) continue;
 
-                $key = cleanMpName($rawName);
+                $key = canonicalMpNameKey($rawName);
 
                 if ($mode === 'goalies') {
                     $matches = findUniqueNamePositionMatch($nameMap, $key, 'G');
-                    if (!$matches) {
-                        if (count($nameMap[$key] ?? []) > 0) $skippedAmbiguous++;
+                    $prospectMatches = [];
+                    if (!$matches && count($nameMap[$key] ?? []) === 0) {
+                        $prospectMatches = findUniqueNamePositionMatch($prospectNameMap, $key, 'G');
+                    }
+                    if (!$matches && !$prospectMatches) {
+                        if (count($nameMap[$key] ?? []) > 0 || count($prospectNameMap[$key] ?? []) > 0) $skippedAmbiguous++;
                         else $skippedUnmatched++;
                         continue;
                     }
@@ -279,20 +379,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($gp < 10) $base = min($base, 65);
                     $ahlOvr = clampRating($base, 58, 70);
 
-                    $match = $matches[0];
-                    $finalOvr = blendTwoWayRating(
-                        $match['nhl_ovr'] !== null ? (int)$match['nhl_ovr'] : null,
-                        (int)$match['nhl_season_gp'], $ahlOvr, $gp
-                    );
-                    $updAhlGoalie->execute([$finalOvr, $finalOvr, $ahlOvr, $gp, $match['player_id']]);
-                    $updated++;
+                    if ($prospectMatches) {
+                        $match = $prospectMatches[0];
+                        $finalOvr = blendTwoWayRating(
+                            $match['nhl_ovr'] !== null ? (int)$match['nhl_ovr'] : null,
+                            (int)$match['nhl_season_gp'], $ahlOvr, $gp
+                        );
+                        $updProspectGoalie->execute([$match['prospect_id'], $finalOvr, $finalOvr, $ahlOvr, $gp]);
+                        $updatedProspects++;
+                    } else {
+                        $match = $matches[0];
+                        $finalOvr = blendTwoWayRating(
+                            $match['nhl_ovr'] !== null ? (int)$match['nhl_ovr'] : null,
+                            (int)$match['nhl_season_gp'], $ahlOvr, $gp
+                        );
+                        $updAhlGoalie->execute([$finalOvr, $finalOvr, $ahlOvr, $gp, $match['player_id']]);
+                        $updated++;
+                    }
                 } elseif ($mode === 'skaters') {
                     $pos = strtoupper(trim((string)($row[$colIdx['pos'] ?? 3] ?? 'F')));
                     if ($pos === 'G') continue;
 
                     $matches = findUniqueNamePositionMatch($nameMap, $key, $pos);
-                    if (!$matches) {
-                        if (count($nameMap[$key] ?? []) > 0) $skippedAmbiguous++;
+                    $prospectMatches = [];
+                    if (!$matches && count($nameMap[$key] ?? []) === 0) {
+                        $prospectMatches = findUniqueNamePositionMatch($prospectNameMap, $key, $pos);
+                    }
+                    if (!$matches && !$prospectMatches) {
+                        if (count($nameMap[$key] ?? []) > 0 || count($prospectNameMap[$key] ?? []) > 0) $skippedAmbiguous++;
                         else $skippedUnmatched++;
                         continue;
                     }
@@ -322,18 +436,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($gp < 12) $rawOvr = min($rawOvr, 64);
                     $ahlOvr = clampRating($rawOvr, 58, 70);
 
-                    $match = $matches[0];
-                    $finalOvr = blendTwoWayRating(
-                        $match['nhl_ovr'] !== null ? (int)$match['nhl_ovr'] : null,
-                        (int)$match['nhl_season_gp'], $ahlOvr, $gp
-                    );
-                    $diff = $finalOvr - $ahlOvr;
-                    $updAhlSkater->execute([
-                        $finalOvr, clampRating($sk + $diff), clampRating($sh + $diff),
-                        clampRating($pa + $diff), clampRating($df + $diff), clampRating($ph + $diff),
-                        $ahlOvr, $gp, $match['player_id']
-                    ]);
-                    $updated++;
+                    if ($prospectMatches) {
+                        $match = $prospectMatches[0];
+                        $finalOvr = blendTwoWayRating(
+                            $match['nhl_ovr'] !== null ? (int)$match['nhl_ovr'] : null,
+                            (int)$match['nhl_season_gp'], $ahlOvr, $gp
+                        );
+                        $diff = $finalOvr - $ahlOvr;
+                        $updProspectSkater->execute([
+                            $match['prospect_id'], clampRating($sk + $diff), clampRating($sh + $diff),
+                            clampRating($pa + $diff), clampRating($df + $diff), clampRating($ph + $diff),
+                            $finalOvr, $ahlOvr, $gp
+                        ]);
+                        $updatedProspects++;
+                    } else {
+                        $match = $matches[0];
+                        $finalOvr = blendTwoWayRating(
+                            $match['nhl_ovr'] !== null ? (int)$match['nhl_ovr'] : null,
+                            (int)$match['nhl_season_gp'], $ahlOvr, $gp
+                        );
+                        $diff = $finalOvr - $ahlOvr;
+                        $updAhlSkater->execute([
+                            $finalOvr, clampRating($sk + $diff), clampRating($sh + $diff),
+                            clampRating($pa + $diff), clampRating($df + $diff), clampRating($ph + $diff),
+                            $ahlOvr, $gp, $match['player_id']
+                        ]);
+                        $updated++;
+                    }
                 }
             }
         } else {
@@ -349,13 +478,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             while ($msgType !== 'error' && ($row = fgetcsv($fh)) !== false) {
-
                 $sit = strtolower(trim((string)mpValue($row, $colIdx, ['situation'], '')));
                 if ($sit !== 'all') continue;
 
                 $rawName = trim((string)mpValue($row, $colIdx, ['name'], ''));
                 if ($rawName === '') continue;
-                $key = cleanNhlName($rawName);
+                $key = canonicalNhlNameKey($rawName);
                 $externalId = trim((string)mpValue($row, $colIdx, ['playerId', 'playerid'], ''));
                 $position = strtoupper(trim((string)mpValue($row, $colIdx, ['position'], '')));
 
@@ -391,12 +519,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $skipReason = 'No database player has this normalized name or supported alias';
                 }
 
+                $prospectMatches = [];
+                if (!$matches && !$idMatches && !$candidates) {
+                    $prospectCandidates = $prospectNhlNameMap[cleanNhlName($rawName)] ?? [];
+                    foreach ($prospectCandidates as $prospectCandidate) {
+                        if (normalizeMpPosition((string)$prospectCandidate['position']) === normalizeMpPosition($position)) {
+                            $prospectMatches[] = $prospectCandidate;
+                        }
+                    }
+                    if (count($prospectMatches) !== 1) $prospectMatches = [];
+                }
+
                 if (count($matches) === 1 && $externalId !== '' && empty($matches[0]['nhl_player_id'])) {
                     $linkNhlId->execute([$externalId, $matches[0]['player_id'], $externalId]);
                     $matches[0]['nhl_player_id'] = $externalId;
                 }
 
-                if (!$matches) {
+                if (!$matches && !$prospectMatches) {
                     if (count($candidates) > 0 || count($idMatches) > 1) {
                         $skippedAmbiguous++;
                     } else {
@@ -433,18 +572,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     elseif ($gp >= 5) $base = max($base, 71);
                     $nhlOvr = clampRating($base, 68, 96);
 
-                    foreach ($matches as $match) {
-                        if (strtoupper($match['position']) !== 'G') continue;
+                    if ($prospectMatches && strtoupper((string)$prospectMatches[0]['position']) === 'G') {
+                        $match = $prospectMatches[0];
                         $finalOvr = blendTwoWayRating(
                             $nhlOvr, $gp,
                             $match['ahl_ovr'] !== null ? (int)$match['ahl_ovr'] : null,
                             (int)$match['ahl_gp']
                         );
-                        $updGoalie->execute([$finalOvr, $finalOvr, $nhlOvr, $gp, $gp, $match['player_id']]);
-                        $updated++;
+                        $updProspectGoalieNhl = $pdo->prepare("
+                            INSERT INTO prospect_ratings (prospect_id, goaltending, overall_rating, nhl_ovr, nhl_season_gp)
+                            VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT (prospect_id) DO UPDATE SET
+                                goaltending = EXCLUDED.goaltending, overall_rating = EXCLUDED.overall_rating,
+                                nhl_ovr = EXCLUDED.nhl_ovr, nhl_season_gp = EXCLUDED.nhl_season_gp,
+                                last_updated = CURRENT_TIMESTAMP
+                        ");
+                        $updProspectGoalieNhl->execute([$match['prospect_id'], $finalOvr, $finalOvr, $nhlOvr, $gp]);
+                        $updatedProspects++;
+                    } else {
+                        foreach ($matches as $match) {
+                            if (strtoupper($match['position']) !== 'G') continue;
+                            $finalOvr = blendTwoWayRating(
+                                $nhlOvr, $gp,
+                                $match['ahl_ovr'] !== null ? (int)$match['ahl_ovr'] : null,
+                                (int)$match['ahl_gp']
+                            );
+                            $updGoalie->execute([$finalOvr, $finalOvr, $nhlOvr, $gp, $gp, $match['player_id']]);
+                            $updated++;
+                        }
                     }
                 } else {
                     if (strtoupper($position) === 'G') continue;
+                    // Header names below match the supplied MoneyPuck export.
                     $goals = (float)mpValue($row, $colIdx, ['I_F_goals'], 0);
                     $a1 = (float)mpValue($row, $colIdx, ['I_F_primaryAssists'], 0);
                     $a2 = (float)mpValue($row, $colIdx, ['I_F_secondaryAssists'], 0);
@@ -453,6 +612,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $blocks = (float)mpValue($row, $colIdx, ['I_F_blockedShotAttempts'], 0);
                     $individualXg = (float)mpValue($row, $colIdx, ['I_F_xGoals'], 0);
                     $onIceXgPct = (float)mpValue($row, $colIdx, ['onIce_xGoalsPercentage'], 0.50);
+                    // This export supplies on-ice xG percentage rather than
+                    // separate on-ice for/against xG totals.
                     $onXga = 0.0;
                     $onXgf = 0.0;
 
@@ -482,20 +643,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     elseif ($gp >= 15) $rawOvr = max($rawOvr, 71);
                     $nhlOvr = clampRating($rawOvr, 68, 96);
 
-                    foreach ($matches as $match) {
-                        if (strtoupper($match['position']) === 'G') continue;
+                    if ($prospectMatches && strtoupper((string)$prospectMatches[0]['position']) !== 'G') {
+                        $match = $prospectMatches[0];
                         $finalOvr = blendTwoWayRating(
                             $nhlOvr, $gp,
                             $match['ahl_ovr'] !== null ? (int)$match['ahl_ovr'] : null,
                             (int)$match['ahl_gp']
                         );
                         $diff = $finalOvr - $nhlOvr;
-                        $updSkater->execute([
-                            $finalOvr, clampRating($sk + $diff), clampRating($sh + $diff),
+                        $updProspectNhlSkater = $pdo->prepare("
+                            INSERT INTO prospect_ratings
+                                (prospect_id, skating, shooting, passing, defense, physical, overall_rating, nhl_ovr, nhl_season_gp)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT (prospect_id) DO UPDATE SET
+                                skating = EXCLUDED.skating, shooting = EXCLUDED.shooting,
+                                passing = EXCLUDED.passing, defense = EXCLUDED.defense,
+                                physical = EXCLUDED.physical, overall_rating = EXCLUDED.overall_rating,
+                                nhl_ovr = EXCLUDED.nhl_ovr, nhl_season_gp = EXCLUDED.nhl_season_gp,
+                                last_updated = CURRENT_TIMESTAMP
+                        ");
+                        $updProspectNhlSkater->execute([
+                            $match['prospect_id'], clampRating($sk + $diff), clampRating($sh + $diff),
                             clampRating($pa + $diff), clampRating($df + $diff), clampRating($ph + $diff),
-                            $nhlOvr, $gp, $gp, $match['player_id']
+                            $finalOvr, $nhlOvr, $gp
                         ]);
-                        $updated++;
+                        $updatedProspects++;
+                    } else {
+                        foreach ($matches as $match) {
+                            if (strtoupper($match['position']) === 'G') continue;
+                            $finalOvr = blendTwoWayRating(
+                                $nhlOvr, $gp,
+                                $match['ahl_ovr'] !== null ? (int)$match['ahl_ovr'] : null,
+                                (int)$match['ahl_gp']
+                            );
+                            $diff = $finalOvr - $nhlOvr;
+                            $updSkater->execute([
+                                $finalOvr, clampRating($sk + $diff), clampRating($sh + $diff),
+                                clampRating($pa + $diff), clampRating($df + $diff), clampRating($ph + $diff),
+                                $nhlOvr, $gp, $gp, $match['player_id']
+                            ]);
+                            $updated++;
+                        }
                     }
                 }
             }
@@ -503,15 +691,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         fclose($fh);
         $msgType = 'info';
-        if ($updated > 0) {
-            $msg = "Ratings update complete. Updated {$updated} player profiles. "
+        if ($updated > 0 || $updatedProspects > 0) {
+            $msg = "Ratings update complete. Updated {$updated} player profiles and {$updatedProspects} prospect ratings. "
                  . "Skipped {$skippedAmbiguous} ambiguous matches and {$skippedUnmatched} unmatched rows.";
         } elseif ($msgType !== 'error') {
             $msgType = 'error';
-            $msg = "The CSV was read, but no player profiles were updated. Check that player names/positions match your database and that the file contains situation=all rows. Skipped {$skippedAmbiguous} ambiguous and {$skippedUnmatched} unmatched rows.";
+            $msg = "The CSV was read, but no player or prospect ratings were updated. Check that player names/positions match your database and that the file contains situation=all rows. Skipped {$skippedAmbiguous} ambiguous and {$skippedUnmatched} unmatched rows.";
         }
     }
-    }
+    } // upload succeeded
 }
 ?>
 <!DOCTYPE html>
