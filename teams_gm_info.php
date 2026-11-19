@@ -4,7 +4,6 @@ require 'db.php';
 $isAdmin = !empty($_SESSION['is_commish']) || !empty($_SESSION['is_admin']);
 $msg = '';
 
-// Handle Update or Remove GM actions (Admins / Commissioners only)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAdmin && !empty($_POST['action'])) {
     $tid = (int)($_POST['team_id'] ?? 0);
 
@@ -61,12 +60,17 @@ $ahlAffiliates = array(
 );
 
 $teams = $pdo->query("
-    SELECT t.team_id, t.name, t.abbreviation, t.gm_name, t.gm_email,
+    SELECT DISTINCT ON (t.team_id)
+           t.team_id, t.name, t.abbreviation, t.gm_name, t.gm_email,
            u.username AS user_gm, u.email AS user_email
     FROM teams t
     LEFT JOIN users u ON u.team_id = t.team_id
-    ORDER BY t.name ASC
+    ORDER BY t.team_id ASC, u.user_id ASC
 ")->fetchAll(PDO::FETCH_ASSOC);
+usort($teams, function($a, $b) {
+    return strcmp($a['name'], $b['name']);
+});
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
