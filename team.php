@@ -2,7 +2,6 @@
 require 'db.php';
 require_once 'cap_helper.php';
 
-
 $team_id   = isset($_GET['id']) ? (int)$_GET['id'] : 1;
 $isCommish = !empty($_SESSION['is_commish']) || !empty($_SESSION['is_admin']);
 $isTeamGM  = (!empty($_SESSION['team_id']) && (int)$_SESSION['team_id'] === $team_id) || $isCommish;
@@ -26,85 +25,85 @@ function requiresWaivers(array $p): bool {
 $isAdminUser = (!empty($_SESSION['is_commish']) || !empty($_SESSION['is_admin']));
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($isTeamGM || $isAdminUser) && !empty($_POST['gm_roster_action'])) {
-$moveAct = $_POST['gm_roster_action'];
-$pid     = (int)($_POST['player_id'] ?? 0);
+    $moveAct = $_POST['gm_roster_action'];
+    $pid     = (int)($_POST['player_id'] ?? 0);
 
-if ($pid > 0) {
-    $chkStmt = $pdo->prepare("SELECT * FROM players WHERE player_id = ? AND team_id = ?");
-    $chkStmt->execute(array($pid, $team_id));
-    $targetPlayer = $chkStmt->fetch(PDO::FETCH_ASSOC);
+    if ($pid > 0) {
+        $chkStmt = $pdo->prepare("SELECT * FROM players WHERE player_id = ? AND team_id = ?");
+        $chkStmt->execute(array($pid, $team_id));
+        $targetPlayer = $chkStmt->fetch(PDO::FETCH_ASSOC);
 
-    if ($targetPlayer) {
-        $fullName = trim(($targetPlayer['first_name'] ?? '') . ' ' . ($targetPlayer['last_name'] ?? ''));
+        if ($targetPlayer) {
+            $fullName = trim(($targetPlayer['first_name'] ?? '') . ' ' . ($targetPlayer['last_name'] ?? ''));
 
-        if ($moveAct === 'send_to_ahl') {
-            $needsWaivers = requiresWaivers($targetPlayer);
+            if ($moveAct === 'send_to_ahl') {
+                $needsWaivers = requiresWaivers($targetPlayer);
 
-            $pdo->prepare("
+                $pdo->prepare("
                     UPDATE players
                     SET roster_status = 'AHL',
                         line_number   = 99
                     WHERE player_id = ? AND team_id = ?
                 ")->execute(array($pid, $team_id));
 
-            if ($needsWaivers) {
-                $rosterAlertType = 'warning';
-                $rosterMsg = "WAIVER NOTICE: {$fullName} requires waivers to be sent down to the AHL! Please ensure waivers are posted and processed per league rules.";
-            } else {
-                $rosterAlertType = 'info';
-                $rosterMsg = "{$fullName} is waiver-exempt and has been sent down to the AHL.";
-            }
-        } elseif ($moveAct === 'call_up_pro') {
-            $pdo->prepare("
+                if ($needsWaivers) {
+                    $rosterAlertType = 'warning';
+                    $rosterMsg = "WAIVER NOTICE: {$fullName} requires waivers to be sent down to the AHL! Please ensure waivers are posted and processed per league rules.";
+                } else {
+                    $rosterAlertType = 'info';
+                    $rosterMsg = "{$fullName} is waiver-exempt and has been sent down to the AHL.";
+                }
+            } elseif ($moveAct === 'call_up_pro') {
+                $pdo->prepare("
                     UPDATE players
                     SET roster_status = 'PRO',
                         line_number   = 99
                     WHERE player_id = ? AND team_id = ?
                 ")->execute(array($pid, $team_id));
 
-            $rosterAlertType = 'info';
-            $rosterMsg = "{$fullName} has been called up to the NHL roster (placed on Healthy Scratch / Line 99).";
-        } elseif ($moveAct === 'activate_rights_player') {
-            $dest   = (($_POST['dest_roster'] ?? 'PRO') === 'AHL') ? 'AHL' : 'PRO';
-            $isElig = !empty($targetPlayer['is_eligible_activate']);
+                $rosterAlertType = 'info';
+                $rosterMsg = "{$fullName} has been called up to the NHL roster (placed on Healthy Scratch / Line 99).";
+            } elseif ($moveAct === 'activate_rights_player') {
+                $dest   = (($_POST['dest_roster'] ?? 'PRO') === 'AHL') ? 'AHL' : 'PRO';
+                $isElig = !empty($targetPlayer['is_eligible_activate']);
 
-            if (!$isElig && !$isAdminUser) {
-                $rosterAlertType = 'error';
-                $rosterMsg = "Cannot activate {$fullName}: Player is marked ineligible (did not play prior season).";
-            } else {
-                $capBlocked = false;
-                if ($dest === 'PRO' && function_exists('getTeamCapSummary')) {
-                    $capCheck = getTeamCapSummary($pdo, $team_id);
-                    if (($capCheck['cap_hit'] + (int)$targetPlayer['salary']) > $capCheck['cap_max']) {
-                        $capBlocked      = true;
-                        $rosterAlertType = 'error';
-                        $rosterMsg       = "Cannot activate {$fullName} to NHL: Adding $" . number_format((int)$targetPlayer['salary']) . " exceeds the $" . number_format($capCheck['cap_max']) . " Salary Cap ceiling.";
+                if (!$isElig && !$isAdminUser) {
+                    $rosterAlertType = 'error';
+                    $rosterMsg = "Cannot activate {$fullName}: Player is marked ineligible (did not play prior season).";
+                } else {
+                    $capBlocked = false;
+                    if ($dest === 'PRO' && function_exists('getTeamCapSummary')) {
+                        $capCheck = getTeamCapSummary($pdo, $team_id);
+                        if (($capCheck['cap_hit'] + (int)$targetPlayer['salary']) > $capCheck['cap_max']) {
+                            $capBlocked      = true;
+                            $rosterAlertType = 'error';
+                            $rosterMsg       = "Cannot activate {$fullName} to NHL: Adding $" . number_format((int)$targetPlayer['salary']) . " exceeds the $" . number_format($capCheck['cap_max']) . " Salary Cap ceiling.";
+                        }
                     }
-                }
 
-                if (!$capBlocked) {
-                    $pdo->prepare("
+                    if (!$capBlocked) {
+                        $pdo->prepare("
                             UPDATE players
                             SET roster_status = ?,
                                 line_number   = 99
                             WHERE player_id = ? AND team_id = ?
                         ")->execute(array($dest, $pid, $team_id));
 
-                    $rosterAlertType = 'info';
-                    $rosterMsg       = "{$fullName} has been reactivated to the {$dest} roster with their saved contract intact!";
+                        $rosterAlertType = 'info';
+                        $rosterMsg       = "{$fullName} has been reactivated to the {$dest} roster with their saved contract intact!";
+                    }
                 }
-            }
-        } elseif ($moveAct === 'release_rights_player') {
-            $addedTs  = !empty($targetPlayer['rights_added_at']) ? strtotime($targetPlayer['rights_added_at']) : time();
-            $daysHeld = (int)floor((time() - $addedTs) / 86400);
-            $canRel   = ($daysHeld >= 365 || $isAdminUser);
+            } elseif ($moveAct === 'release_rights_player') {
+                $addedTs  = !empty($targetPlayer['rights_added_at']) ? strtotime($targetPlayer['rights_added_at']) : time();
+                $daysHeld = (int)floor((time() - $addedTs) / 86400);
+                $canRel   = ($daysHeld >= 365 || $isAdminUser);
 
-            if (!$canRel) {
-                $daysLeft        = 365 - $daysHeld;
-                $rosterAlertType = 'error';
-                $rosterMsg       = "Cannot release {$fullName} yet: European/LTIR rights players must be held for 1 full year ({$daysLeft} days remaining).";
-            } else {
-                $pdo->prepare("
+                if (!$canRel) {
+                    $daysLeft        = 365 - $daysHeld;
+                    $rosterAlertType = 'error';
+                    $rosterMsg       = "Cannot release {$fullName} yet: European/LTIR rights players must be held for 1 full year ({$daysLeft} days remaining).";
+                } else {
+                    $pdo->prepare("
                         UPDATE players
                         SET team_id        = NULL,
                             prev_team_id   = ?,
@@ -117,61 +116,60 @@ if ($pid > 0) {
                         WHERE player_id = ? AND team_id = ?
                     ")->execute(array($team_id, $pid, $team_id));
 
-                $rosterAlertType = 'info';
-                $rosterMsg       = "{$fullName} has been released from Rights Owned into Unrestricted Free Agency.";
+                    $rosterAlertType = 'info';
+                    $rosterMsg       = "{$fullName} has been released from Rights Owned into Unrestricted Free Agency.";
+                }
             }
         }
     }
-}
+    $prospectId = (int)($_POST['prospect_id'] ?? 0);
+    if ($prospectId > 0 && ($moveAct === 'sign_prospect_elc' || $moveAct === 'release_prospect')) {
+        $prStmt = $pdo->prepare("SELECT * FROM prospects WHERE prospect_id = ? AND team_id = ?");
+        $prStmt->execute(array($prospectId, $team_id));
+        $pr = $prStmt->fetch(PDO::FETCH_ASSOC);
 
-$prospectId = (int)($_POST['prospect_id'] ?? 0);
-if ($prospectId > 0 && ($moveAct === 'sign_prospect_elc' || $moveAct === 'release_prospect')) {
-$prStmt = $pdo->prepare("SELECT * FROM prospects WHERE prospect_id = ? AND team_id = ?");
-$prStmt->execute(array($prospectId, $team_id));
-$pr = $prStmt->fetch(PDO::FETCH_ASSOC);
+        if ($pr) {
+            $prName = trim(($pr['first_name'] ?? '') . ' ' . ($pr['last_name'] ?? ''));
 
-if ($pr) {
-$prName = trim(($pr['first_name'] ?? '') . ' ' . ($pr['last_name'] ?? ''));
+            if ($moveAct === 'release_prospect') {
+                $pdo->prepare("DELETE FROM prospects WHERE prospect_id = ? AND team_id = ?")
+                        ->execute(array($prospectId, $team_id));
+                $rosterAlertType = 'info';
+                $rosterMsg       = "Draft rights to {$prName} have been relinquished.";
+            } elseif ($moveAct === 'sign_prospect_elc') {
+                $draftYear = (int)($pr['draft_year'] ?? 2025);
+                $rawAge    = (int)($pr['age'] ?? 0);
+                $pAge      = ($rawAge > 18) ? $rawAge : (($draftYear > 0 && $draftYear < 2026) ? (2026 - $draftYear + 18) : 18);
+                $dest      = (($_POST['dest_roster'] ?? 'AHL') === 'PRO') ? 'PRO' : 'AHL';
 
-if ($moveAct === 'release_prospect') {
-    $pdo->prepare("DELETE FROM prospects WHERE prospect_id = ? AND team_id = ?")
-            ->execute(array($prospectId, $team_id));
-    $rosterAlertType = 'info';
-    $rosterMsg       = "Draft rights to {$prName} have been relinquished.";
-} elseif ($moveAct === 'sign_prospect_elc') {
-$draftYear = (int)($pr['draft_year'] ?? 2025);
-$rawAge    = (int)($pr['age'] ?? 0);
-$pAge      = ($rawAge > 18) ? $rawAge : (($draftYear > 0 && $draftYear < 2026) ? (2026 - $draftYear + 18) : 18);
-$dest      = (($_POST['dest_roster'] ?? 'AHL') === 'PRO') ? 'PRO' : 'AHL';
+                if ($pAge <= 21) $elcYears = 3;
+                elseif ($pAge <= 23) $elcYears = 2;
+                else $elcYears = 1;
 
-if ($pAge <= 21) $elcYears = 3;
-elseif ($pAge <= 23) $elcYears = 2;
-else $elcYears = 1;
+                $elcMin    = 775000;
+                $elcMax    = ($draftYear >= 2024) ? 975000 : 950000;
+                $reqSalary = (int)preg_replace('/[^0-9]/', '', (string)($_POST['elc_salary'] ?? $elcMax));
 
-$elcMin    = 775000;
-$elcMax    = ($draftYear >= 2024) ? 975000 : 950000;
-$reqSalary = (int)preg_replace('/[^0-9]/', '', (string)($_POST['elc_salary'] ?? $elcMax));
+                if ($reqSalary < $elcMin || $reqSalary > $elcMax) {
+                    $rosterAlertType = 'error';
+                    $rosterMsg       = "Invalid ELC salary for {$prName}: Must be between $" . number_format($elcMin) . " and $" . number_format($elcMax) . " (Term is fixed at {$elcYears} yr" . ($elcYears > 1 ? 's' : '') . ").";
+                } else {
+                    $capBlocked = false;
+                    if ($dest === 'PRO' && function_exists('getTeamCapSummary')) {
+                        $capCheck = getTeamCapSummary($pdo, $team_id);
+                        if (($capCheck['cap_hit'] + $reqSalary) > $capCheck['cap_max']) {
+                            $capBlocked      = true;
+                            $rosterAlertType = 'error';
+                            $rosterMsg       = "Cannot sign {$prName} directly to NHL: $" . number_format($reqSalary) . " ELC exceeds the $" . number_format($capCheck['cap_max']) . " Salary Cap ceiling (try signing to AHL instead).";
+                        }
+                    }
 
-if ($reqSalary < $elcMin || $reqSalary > $elcMax) {
-    $rosterAlertType = 'error';
-    $rosterMsg       = "Invalid ELC salary for {$prName}: Must be between $" . number_format($elcMin) . " and $" . number_format($elcMax) . " (Term is fixed at {$elcYears} yr" . ($elcYears > 1 ? 's' : '') . ").";
-} else {
-$capBlocked = false;
-if ($dest === 'PRO' && function_exists('getTeamCapSummary')) {
-    $capCheck = getTeamCapSummary($pdo, $team_id);
-    if (($capCheck['cap_hit'] + $reqSalary) > $capCheck['cap_max']) {
-        $capBlocked      = true;
-        $rosterAlertType = 'error';
-        $rosterMsg       = "Cannot sign {$prName} directly to NHL: $" . number_format($reqSalary) . " ELC exceeds the $" . number_format($capCheck['cap_max']) . " Salary Cap ceiling (try signing to AHL instead).";
-    }
-}
+                    if (!$capBlocked) {
+                        $pos = strtoupper(trim($pr['position'] ?? 'C'));
+                        if ($pos === 'F' || $pos === '') $pos = 'C';
+                        $isGoalie = ($pos === 'G');
 
-if (!$capBlocked) {
-$pos = strtoupper(trim($pr['position'] ?? 'C'));
-if ($pos === 'F' || $pos === '') $pos = 'C';
-$isGoalie = ($pos === 'G');
-
-$dupChk = $pdo->prepare("
+                        $dupChk = $pdo->prepare("
                             SELECT player_id FROM players
                             WHERE team_id = ?
                               AND LOWER(TRIM(first_name)) = LOWER(TRIM(?))
@@ -179,11 +177,11 @@ $dupChk = $pdo->prepare("
                               AND COALESCE(is_retired, FALSE) = FALSE
                             LIMIT 1
                         ");
-$dupChk->execute(array($team_id, trim($pr['first_name']), trim($pr['last_name'])));
-$existingPid = (int)$dupChk->fetchColumn();
+                        $dupChk->execute(array($team_id, trim($pr['first_name']), trim($pr['last_name'])));
+                        $existingPid = (int)$dupChk->fetchColumn();
 
-if ($existingPid > 0) {
-$pdo->prepare("
+                        if ($existingPid > 0) {
+                            $pdo->prepare("
                                 UPDATE players
                                 SET roster_status  = ?,
                                     contract_years = ?,
@@ -192,8 +190,8 @@ $pdo->prepare("
                                     line_number    = 99
                                 WHERE player_id = ?
                             ")->execute(array($dest, $elcYears, $reqSalary, $pAge, $existingPid));
-} else {
-    $ins = $pdo->prepare("
+                        } else {
+                            $ins = $pdo->prepare("
                                 INSERT INTO players (
                                     team_id, first_name, last_name, position, age,
                                     roster_status, contract_years, salary,
@@ -206,35 +204,35 @@ $pdo->prepare("
                                     99, 100, FALSE, 0, FALSE
                                 )
                             ");
-    $ins->execute(array(
-            $team_id,
-            trim($pr['first_name']),
-            trim($pr['last_name']),
-            $pos,
-            $pAge,
-            $dest,
-            $elcYears,
-            $reqSalary,
-            68,
-            $isGoalie ? 50 : 69,
-            $isGoalie ? 50 : 68,
-            $isGoalie ? 50 : 68,
-            $isGoalie ? 50 : 67,
-            $isGoalie ? 50 : 67,
-            $isGoalie ? 69 : 50
-    ));
-}
+                            $ins->execute(array(
+                                    $team_id,
+                                    trim($pr['first_name']),
+                                    trim($pr['last_name']),
+                                    $pos,
+                                    $pAge,
+                                    $dest,
+                                    $elcYears,
+                                    $reqSalary,
+                                    68,
+                                    $isGoalie ? 50 : 69,
+                                    $isGoalie ? 50 : 68,
+                                    $isGoalie ? 50 : 68,
+                                    $isGoalie ? 50 : 67,
+                                    $isGoalie ? 50 : 67,
+                                    $isGoalie ? 69 : 50
+                            ));
+                        }
 
-    $pdo->prepare("DELETE FROM prospects WHERE prospect_id = ? AND team_id = ?")
-            ->execute(array($prospectId, $team_id));
+                        $pdo->prepare("DELETE FROM prospects WHERE prospect_id = ? AND team_id = ?")
+                                ->execute(array($prospectId, $team_id));
 
-    $rosterAlertType = 'info';
-    $rosterMsg       = "ELC SIGNED! {$prName} signed a fixed {$elcYears}-year Entry-Level Contract at $" . number_format($reqSalary) . "/yr and assigned to {$dest}.";
-}
-}
-}
-}
-}
+                        $rosterAlertType = 'info';
+                        $rosterMsg       = "ELC SIGNED! {$prName} signed a fixed {$elcYears}-year Entry-Level Contract at $" . number_format($reqSalary) . "/yr and assigned to {$dest}.";
+                    }
+                }
+            }
+        }
+    }
 }
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isCommish && !empty($_POST['commish_player_action'])) {
     $act  = $_POST['commish_player_action'];
@@ -348,7 +346,6 @@ $gmName  = $team['gm_name'] ?? 'Vacant';
 $c1      = $teamColors[$abbr] ?? ($team['primary_color'] ?? '#0284c7');
 $c2      = $teamColors[$abbr] ?? ($team['secondary_color'] ?? '#38bdf8');
 
-
 $gmUserStmt = $pdo->prepare("SELECT username FROM users WHERE team_id = ? LIMIT 1");
 $gmUserStmt->execute(array($team_id));
 $dbGmUser = $gmUserStmt->fetchColumn();
@@ -375,11 +372,64 @@ foreach ($gStmt->fetchAll(PDO::FETCH_ASSOC) as $g) {
         $l++;
     }
 }
-
 $pStmt = $pdo->prepare("SELECT * FROM players WHERE team_id = ? AND COALESCE(is_retired, FALSE) = FALSE ORDER BY overall_rating DESC, last_name ASC");
-
 $pStmt->execute(array($team_id));
 $allPlayers = $pStmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Fetch active salary retentions BY this team (counts against their 3 retention slots)
+$teamRetainedList = array();
+try {
+    $retOutStmt = $pdo->prepare("
+        SELECT rs.*,
+               p.first_name,
+               p.last_name,
+               p.position,
+               t.abbreviation AS current_team_abbr,
+               t.name AS current_team_name
+        FROM retained_salaries rs
+        LEFT JOIN players p ON rs.player_id = p.player_id
+        LEFT JOIN teams t ON p.team_id = t.team_id
+        WHERE rs.retaining_team_id = ?
+          AND rs.years_remaining > 0
+        ORDER BY rs.retained_cap_hit DESC
+    ");
+    $retOutStmt->execute(array($team_id));
+    $teamRetainedList = $retOutStmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Exception $e) {
+    $teamRetainedList = array();
+}
+$retentionSlotsUsed = count($teamRetainedList);
+
+// Fetch any retentions ON players currently on this team's roster (retained by former teams)
+$playerRetentionsMap = array();
+try {
+    $retInStmt = $pdo->prepare("
+        SELECT rs.player_id,
+               rs.retained_cap_hit,
+               t.abbreviation AS retaining_abbr
+        FROM retained_salaries rs
+        JOIN players p ON rs.player_id = p.player_id
+        LEFT JOIN teams t ON rs.retaining_team_id = t.team_id
+        WHERE p.team_id = ?
+          AND rs.years_remaining > 0
+    ");
+    $retInStmt->execute(array($team_id));
+    foreach ($retInStmt->fetchAll(PDO::FETCH_ASSOC) as $ri) {
+        $pidKey = (int)$ri['player_id'];
+        if (!isset($playerRetentionsMap[$pidKey])) {
+            $playerRetentionsMap[$pidKey] = array(
+                    'total_retained' => 0,
+                    'sources'        => array(),
+            );
+        }
+        $amt = (int)$ri['retained_cap_hit'];
+        $playerRetentionsMap[$pidKey]['total_retained'] += $amt;
+        $srcAbbr = !empty($ri['retaining_abbr']) ? strtoupper(trim($ri['retaining_abbr'])) : 'Prior Team';
+        $playerRetentionsMap[$pidKey]['sources'][] = '$' . number_format($amt) . ' by ' . $srcAbbr;
+    }
+} catch (Exception $e) {
+    $playerRetentionsMap = array();
+}
 
 $nhlPlayers              = array();
 $ahlPlayers              = array();
@@ -469,7 +519,7 @@ function extractProspectName($row) {
     }
     return '';
 }
-function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL') {
+function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL', $playerRetentionsMap = array()) {
     if (empty($rows)) {
         echo '<p style="color:#94a3b8;">No players assigned to this roster.</p>';
         return;
@@ -485,14 +535,24 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL') {
     echo '</tr>';
 
     foreach ($rows as $p) {
+        $pid      = (int)$p['player_id'];
         $inj      = !empty($p['is_injured']) ? '<span class="inj"> (INJ ' . (int)$p['injury_days_remaining'] . 'd)</span>' : '';
         $fullName = trim($p['first_name'] . ' ' . $p['last_name']);
         $needsWvr = $isPro && requiresWaivers($p);
         $wvrBadge = $needsWvr ? ' <span class="badge-waiver">Waivers</span>' : '';
 
+        $retInfo  = $playerRetentionsMap[$pid] ?? null;
+        $retBadge = '';
+        $retSub   = '';
+        if ($retInfo && $retInfo['total_retained'] > 0) {
+            $retTitle = htmlspecialchars(implode(', ', $retInfo['sources']), ENT_QUOTES);
+            $retBadge = ' <span class="badge-retained" title="Retained: ' . $retTitle . '">Retained</span>';
+            $retSub   = '<div style="font-size:0.78em; color:#c084fc; margin-top:2px;">Retained: $' . number_format($retInfo['total_retained']) . '</div>';
+        }
+
         echo '<tr>
             <td>' . getLineLabel($p, $isPro) . '</td>
-            <td><strong>' . htmlspecialchars($fullName) . '</strong>' . $inj . $wvrBadge . '</td>
+            <td><strong>' . htmlspecialchars($fullName) . '</strong>' . $inj . $wvrBadge . $retBadge . '</td>
             <td>' . htmlspecialchars($p['position']) . '</td>
             <td><strong>' . (int)$p['overall_rating'] . '</strong></td>
             <td>' . (int)$p['skating'] . '</td>
@@ -500,13 +560,12 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL') {
             <td>' . (int)$p['passing'] . '</td>
             <td>' . (int)$p['defense'] . '</td>
             <td>' . (int)$p['physical'] . '</td>
-            <td>$' . number_format((int)$p['salary']) . ' (' . (int)$p['contract_years'] . 'y)</td>
+            <td>$' . number_format((int)$p['salary']) . ' (' . (int)$p['contract_years'] . 'y)' . $retSub . '</td>
             <td>' . (int)$p['condition'] . '%</td>';
 
         if ($isTeamGM) {
-            $pid     = (int)$p['player_id'];
-            $jsName  = htmlspecialchars($fullName, ENT_QUOTES);
-            $jsAhl   = htmlspecialchars($ahlName, ENT_QUOTES);
+            $jsName = htmlspecialchars($fullName, ENT_QUOTES);
+            $jsAhl  = htmlspecialchars($ahlName, ENT_QUOTES);
             echo '<td style="text-align:center;">';
             if ($isPro) {
                 $onsubmit = $needsWvr
@@ -536,7 +595,6 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL') {
     echo '</table>';
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -558,6 +616,7 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL') {
         .badge-farm { background: #1e3a8a; color: #93c5fd; padding: 2px 7px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
         .badge-rights { background: #581c87; color: #e9d5ff; padding: 2px 7px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
         .badge-waiver { background: #7c2d12; color: #fdba74; border: 1px solid #f97316; padding: 1px 6px; border-radius: 4px; font-size: 0.75em; font-weight: bold; margin-left: 5px; }
+        .badge-retained { background: #4c1d95; color: #ddd6fe; border: 1px solid #8b5cf6; padding: 1px 6px; border-radius: 4px; font-size: 0.75em; font-weight: bold; margin-left: 5px; }
         .inj { color: #f87171; font-weight: bold; font-size: 0.85em; }
         .btn-move { color: #fff; border: 1px solid rgba(255,255,255,0.18); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; font-weight: bold; }
         .btn-move-up { background: #0284c7; }
@@ -569,6 +628,7 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL') {
         .roster-alert { padding: 12px 16px; margin-bottom: 18px; border-radius: 8px; font-size: 0.95em; font-weight: bold; }
         .roster-alert.info { background: #0c4a6e; border: 1px solid #38bdf8; color: #e0f2fe; }
         .roster-alert.warning { background: #431407; border: 1px solid #f97316; color: #fed7aa; }
+        .roster-alert.error { background: #7f1d1d; border: 1px solid #ef4444; color: #fecaca; }
         .picks-matrix th, .picks-matrix td { text-align: center; border: 1px solid #334155; padding: 8px 6px; }
         .pick-chip { display: inline-flex; align-items: center; justify-content: center; background: #e2e8f0; border: 1px solid #94a3b8; border-radius: 6px; padding: 3px; margin: 2px; }
         .pick-chip img { width: 38px; height: 38px; object-fit: contain; }
@@ -633,36 +693,36 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL') {
     </div>
 <?php endif; ?>
 
-    <div class="team-hero" style="background: linear-gradient(115deg, <?= $c1 ?> 0%, #020617 52%, <?= $c2 ?> 100%);">
-        <img class="team-hero-watermark" src="logos/<?= htmlspecialchars($abbr) ?>.svg" alt="">
-        <img class="team-hero-logo" src="logos/<?= htmlspecialchars($abbr) ?>.svg" alt="<?= htmlspecialchars($abbr) ?>">
-        <div class="team-hero-info">
-            <h1><?= htmlspecialchars($nhlName) ?></h1>
-            <div class="team-hero-line">
-                <strong>GP:</strong> <?= $gp ?> &nbsp;|&nbsp;
-                <strong>W:</strong> <?= $w ?> &nbsp;|&nbsp;
-                <strong>L:</strong> <?= $l ?> &nbsp;|&nbsp;
-                <strong>OTL:</strong> <?= $otl ?> &nbsp;|&nbsp;
-                <strong>PTS:</strong> <?= $pts ?>
-            </div>
-            <div class="team-hero-line">
-                <strong>GF:</strong> <?= $gf ?> &nbsp;|&nbsp;
-                <strong>GA:</strong> <?= $ga ?> &nbsp;|&nbsp;
-                <strong>AHL Affiliate:</strong> <?= htmlspecialchars($ahlName) ?>
-            </div>
-            <div class="team-hero-line">
-                <strong>GM:</strong> <?= htmlspecialchars($gmName) ?> &nbsp;|&nbsp;
-                <strong>Team Overall:</strong> <?= $avgOvr ?>
-            </div>
+<div class="team-hero" style="background: linear-gradient(115deg, <?= $c1 ?> 0%, #020617 52%, <?= $c2 ?> 100%);">
+    <img class="team-hero-watermark" src="logos/<?= htmlspecialchars($abbr) ?>.svg" alt="">
+    <img class="team-hero-logo" src="logos/<?= htmlspecialchars($abbr) ?>.svg" alt="<?= htmlspecialchars($abbr) ?>">
+    <div class="team-hero-info">
+        <h1><?= htmlspecialchars($nhlName) ?></h1>
+        <div class="team-hero-line">
+            <strong>GP:</strong> <?= $gp ?> &nbsp;|&nbsp;
+            <strong>W:</strong> <?= $w ?> &nbsp;|&nbsp;
+            <strong>L:</strong> <?= $l ?> &nbsp;|&nbsp;
+            <strong>OTL:</strong> <?= $otl ?> &nbsp;|&nbsp;
+            <strong>PTS:</strong> <?= $pts ?>
+        </div>
+        <div class="team-hero-line">
+            <strong>GF:</strong> <?= $gf ?> &nbsp;|&nbsp;
+            <strong>GA:</strong> <?= $ga ?> &nbsp;|&nbsp;
+            <strong>AHL Affiliate:</strong> <?= htmlspecialchars($ahlName) ?>
+        </div>
+        <div class="team-hero-line">
+            <strong>GM:</strong> <?= htmlspecialchars($gmName) ?> &nbsp;|&nbsp;
+            <strong>Team Overall:</strong> <?= $avgOvr ?>
         </div>
     </div>
+</div>
 <?php
 $viewTeamId = (int)($teamId ?? $tid ?? $_GET['id'] ?? $_GET['team_id'] ?? 0);
 if ($viewTeamId > 0):
     $teamCap = getTeamCapSummary($pdo, $viewTeamId);
     $borderColor = $teamCap['is_over_cap'] ? '#ef4444' : ($teamCap['is_below_floor'] ? '#f59e0b' : '#334155');
     ?>
-    <div style="background:#1e293b; border:1px solid <?= $borderColor ?>; border-radius:8px; padding:12px 16px; margin-bottom:18px; display:flex; gap:24px; flex-wrap:wrap; align-items:center; font-size:0.93em;">
+    <div style="background:#1e293b; border:1px solid <?= $borderColor ?>; border-radius:8px; padding:12px 16px; margin-bottom:18px; display:flex; gap:22px; flex-wrap:wrap; align-items:center; font-size:0.93em;">
         <div>
             <strong><?= htmlspecialchars($teamCap['season_label']) ?> Cap Hit:</strong>
             <span style="color:#38bdf8; font-weight:bold;">$<?= number_format($teamCap['cap_hit']) ?></span>
@@ -675,6 +735,16 @@ if ($viewTeamId > 0):
             </span>
             <?php if ($teamCap['is_over_cap']): ?>
                 <span style="background:#7f1d1d; color:#fca5a5; padding:2px 6px; border-radius:4px; font-size:0.8em; font-weight:bold; margin-left:4px;">OVER CAP</span>
+            <?php endif; ?>
+        </div>
+
+        <div>
+            <strong>Retention Slots:</strong>
+            <span style="color:<?= $retentionSlotsUsed >= 3 ? '#fbbf24' : '#c084fc' ?>; font-weight:bold;">
+                <?= $retentionSlotsUsed ?> / 3
+            </span>
+            <?php if ($teamCap['retained_cap'] > 0): ?>
+                <span style="color:#94a3b8; font-size:0.88em;">($<?= number_format($teamCap['retained_cap']) ?>)</span>
             <?php endif; ?>
         </div>
 
@@ -692,35 +762,74 @@ if ($viewTeamId > 0):
         </div>
     </div>
 <?php endif; ?>
-    <h2>Draft Picks (5-Year Matrix)</h2>
-    <table class="picks-matrix">
+<h2>Draft Picks (5-Year Matrix)</h2>
+<table class="picks-matrix">
+    <tr>
+        <th style="width:90px;">Year</th>
+        <th>R1</th><th>R2</th><th>R3</th><th>R4</th><th>R5</th><th>R6</th><th>R7</th>
+    </tr>
+    <?php foreach ($pickYears as $yr): ?>
         <tr>
-            <th style="width:90px;">Year</th>
-            <th>R1</th><th>R2</th><th>R3</th><th>R4</th><th>R5</th><th>R6</th><th>R7</th>
-        </tr>
-        <?php foreach ($pickYears as $yr): ?>
-            <tr>
-                <td><strong><?= $yr ?></strong></td>
-                <?php for ($rd = 1; $rd <= 7; $rd++): ?>
-                    <td>
-                        <?php
-                        if (!empty($pickMatrix[$yr][$rd])) {
-                            foreach ($pickMatrix[$yr][$rd] as $origAbbr) {
-                                echo getTeamLogoHtml($origAbbr);
-                            }
+            <td><strong><?= $yr ?></strong></td>
+            <?php for ($rd = 1; $rd <= 7; $rd++): ?>
+                <td>
+                    <?php
+                    if (!empty($pickMatrix[$yr][$rd])) {
+                        foreach ($pickMatrix[$yr][$rd] as $origAbbr) {
+                            echo getTeamLogoHtml($origAbbr);
                         }
-                        ?>
-                    </td>
-                <?php endfor; ?>
+                    }
+                    ?>
+                </td>
+            <?php endfor; ?>
+        </tr>
+    <?php endforeach; ?>
+    <tr>
+        <td><strong>Conditional Draft Picks</strong></td>
+        <td colspan="7" style="text-align:left;color:#94a3b8;padding-left:12px;">
+            <?= !empty($condNotes) ? htmlspecialchars(implode(' | ', $condNotes)) : 'None' ?>
+        </td>
+    </tr>
+</table>
+
+<h2>Retained Salary Contracts (<?= $retentionSlotsUsed ?> / 3 Slots Used)</h2>
+<?php if (empty($teamRetainedList)): ?>
+    <div style="background:#1e293b; padding:12px 16px; border-radius:8px; border:1px solid #334155; color:#94a3b8; margin-bottom:24px; font-size:0.93em;">
+        No active retained salary contracts (0 of 3 retention slots used).
+    </div>
+<?php else: ?>
+    <table>
+        <tr>
+            <th>Player</th>
+            <th>Pos</th>
+            <th>Current Team</th>
+            <th>Retained Cap Hit</th>
+            <th>Years Remaining</th>
+        </tr>
+        <?php foreach ($teamRetainedList as $ret):
+            $rPlayerName = trim(($ret['first_name'] ?? '') . ' ' . ($ret['last_name'] ?? ''));
+            if ($rPlayerName === '') {
+                $rPlayerName = 'Player #' . (int)($ret['player_id'] ?? 0);
+            }
+            $rTeamLabel = !empty($ret['current_team_name'])
+                    ? $ret['current_team_name'] . ' (' . strtoupper(trim($ret['current_team_abbr'])) . ')'
+                    : 'Free Agent / Inactive';
+            $rAmt = (int)($ret['retained_cap_hit'] ?? 0);
+            $rPct = isset($ret['retention_percent']) && (float)$ret['retention_percent'] > 0
+                    ? ' (' . rtrim(rtrim(number_format((float)$ret['retention_percent'], 1), '0'), '.') . '%)'
+                    : '';
+            $rYrs = (int)($ret['years_remaining'] ?? 0);
+            ?>
+            <tr>
+                <td><strong><?= htmlspecialchars($rPlayerName) ?></strong></td>
+                <td><?= htmlspecialchars($ret['position'] ?? '—') ?></td>
+                <td><?= htmlspecialchars($rTeamLabel) ?></td>
+                <td><strong style="color:#c084fc;">$<?= number_format($rAmt) ?></strong><?= htmlspecialchars($rPct) ?></td>
+                <td><?= $rYrs ?> yr<?= $rYrs === 1 ? '' : 's' ?></td>
             </tr>
         <?php endforeach; ?>
-        <tr>
-            <td><strong>Conditional Draft Picks</strong></td>
-            <td colspan="7" style="text-align:left;color:#94a3b8;padding-left:12px;">
-                <?= !empty($condNotes) ? htmlspecialchars(implode(' | ', $condNotes)) : 'None' ?>
-            </td>
-        </tr>
     </table>
+<?php endif; ?>
 <?php
 $nhlById = array();
 foreach ($nhlPlayers as $p) {
@@ -824,39 +933,39 @@ function fmtLinePlayer($p) {
 }
 ?>
 
-    <h2><span class="league-tag-nhl">NHL</span><?= htmlspecialchars($nhlName) ?> Lineup</h2>
+<h2><span class="league-tag-nhl">NHL</span><?= htmlspecialchars($nhlName) ?> Lineup</h2>
 
-    <table class="lineup-grid">
-        <tr><th colspan="4" class="lineup-banner">5 vs 5 Forward</th></tr>
-        <tr><th style="width:80px;">Line #</th><th>Left Wing</th><th>Center</th><th>Right Wing</th></tr>
-        <?php for ($l = 1; $l <= 4; $l++): ?>
-            <tr>
-                <td><strong><?= $l ?></strong></td>
-                <td><?= fmtLinePlayer($fwdLines[$l]['LW']) ?></td>
-                <td><?= fmtLinePlayer($fwdLines[$l]['C']) ?></td>
-                <td><?= fmtLinePlayer($fwdLines[$l]['RW']) ?></td>
-            </tr>
-        <?php endfor; ?>
-    </table>
+<table class="lineup-grid">
+    <tr><th colspan="4" class="lineup-banner">5 vs 5 Forward</th></tr>
+    <tr><th style="width:80px;">Line #</th><th>Left Wing</th><th>Center</th><th>Right Wing</th></tr>
+    <?php for ($l = 1; $l <= 4; $l++): ?>
+        <tr>
+            <td><strong><?= $l ?></strong></td>
+            <td><?= fmtLinePlayer($fwdLines[$l]['LW']) ?></td>
+            <td><?= fmtLinePlayer($fwdLines[$l]['C']) ?></td>
+            <td><?= fmtLinePlayer($fwdLines[$l]['RW']) ?></td>
+        </tr>
+    <?php endfor; ?>
+</table>
 
-    <table class="lineup-grid">
-        <tr><th colspan="4" class="lineup-banner">5 vs 5 Defense</th></tr>
-        <tr><th style="width:80px;">Pair #</th><th>Defense</th><th>Defense</th><th style="width:220px;">Goalies</th></tr>
-        <?php for ($d = 1; $d <= 3; $d++): ?>
-            <tr>
-                <td><strong><?= $d ?></strong></td>
-                <td><?= fmtLinePlayer($defPairs[$d][0] ?? null) ?></td>
-                <td><?= fmtLinePlayer($defPairs[$d][1] ?? null) ?></td>
-                <td>
-                    <?php
-                    if ($d === 1) echo '<small style="color:#38bdf8;">Starter:</small> ' . fmtLinePlayer($goalies[1] ?? null);
-                    elseif ($d === 2) echo '<small style="color:#94a3b8;">Backup:</small> ' . fmtLinePlayer($goalies[2] ?? null);
-                    else echo '<span style="color:#475569;">—</span>';
-                    ?>
-                </td>
-            </tr>
-        <?php endfor; ?>
-    </table>
+<table class="lineup-grid">
+    <tr><th colspan="4" class="lineup-banner">5 vs 5 Defense</th></tr>
+    <tr><th style="width:80px;">Pair #</th><th>Defense</th><th>Defense</th><th style="width:220px;">Goalies</th></tr>
+    <?php for ($d = 1; $d <= 3; $d++): ?>
+        <tr>
+            <td><strong><?= $d ?></strong></td>
+            <td><?= fmtLinePlayer($defPairs[$d][0] ?? null) ?></td>
+            <td><?= fmtLinePlayer($defPairs[$d][1] ?? null) ?></td>
+            <td>
+                <?php
+                if ($d === 1) echo '<small style="color:#38bdf8;">Starter:</small> ' . fmtLinePlayer($goalies[1] ?? null);
+                elseif ($d === 2) echo '<small style="color:#94a3b8;">Backup:</small> ' . fmtLinePlayer($goalies[2] ?? null);
+                else echo '<span style="color:#475569;">—</span>';
+                ?>
+            </td>
+        </tr>
+    <?php endfor; ?>
+</table>
 
 <?php if (!empty($scratches)): ?>
     <p style="margin-top:-12px;margin-bottom:24px;color:#cbd5e1;font-size:0.92em;">
@@ -874,11 +983,11 @@ function fmtLinePlayer($p) {
 
 <details style="margin-bottom:24px;" <?= $isTeamGM ? 'open' : '' ?>>
     <summary style="cursor:pointer;color:#38bdf8;font-weight:bold;padding:8px 0;">View Full NHL Ratings &amp; Contracts Table (<?= count($nhlPlayers) ?> Players)</summary>
-    <?php renderRosterTable($nhlPlayers, true, $isTeamGM, $ahlName); ?>
+    <?php renderRosterTable($nhlPlayers, true, $isTeamGM, $ahlName, $playerRetentionsMap); ?>
 </details>
 
 <h2><span class="league-tag-ahl">AHL</span><?= htmlspecialchars($ahlName) ?> Roster (<?= count($ahlPlayers) ?>)</h2>
-<?php renderRosterTable($ahlPlayers, false, $isTeamGM, $ahlName); ?>
+<?php renderRosterTable($ahlPlayers, false, $isTeamGM, $ahlName, $playerRetentionsMap); ?>
 <?php
 
 $rightsStmt = $pdo->prepare("
@@ -913,93 +1022,93 @@ $isCommishUser = (!empty($_SESSION['is_commish']) || !empty($_SESSION['is_admin'
 </h2>
 
 <?php if (empty($rightsPlayers)): ?>
-<div style="background:#1e293b; padding:14px 16px; border-radius:8px; border:1px solid #334155; color:#94a3b8;">
-    No inactive Rights Owned, Euro, or LTIR players currently held by this team.
-</div>
+    <div style="background:#1e293b; padding:14px 16px; border-radius:8px; border:1px solid #334155; color:#94a3b8;">
+        No inactive Rights Owned, Euro, or LTIR players currently held by this team.
+    </div>
 <?php else: ?>
-<div style="overflow-x:auto;">
-    <table style="width:100%; border-collapse:collapse; background:#1e293b; border-radius:8px; overflow:hidden;">
-        <tr style="background:#020617; color:#38bdf8;">
-            <th style="padding:10px; text-align:left;">Player</th>
-            <th style="padding:10px; text-align:left;">Pos</th>
-            <th style="padding:10px; text-align:left;">Age</th>
-            <th style="padding:10px; text-align:left;">OVR</th>
-            <th style="padding:10px; text-align:left;">Saved Contract</th>
-            <th style="padding:10px; text-align:left;">Status / 1-Yr Release Timer</th>
-            <?php if ($isTeamGM || $isCommishUser): ?>
-                <th style="padding:10px; text-align:left;">Actions</th>
-            <?php endif; ?>
-        </tr>
-        <?php foreach ($rightsPlayers as $rp):
-            $isElig    = !empty($rp['is_eligible_activate']);
-            $reason    = trim($rp['rights_reason'] ?? strtoupper($rp['roster_status'] ?? 'Rights Owned'));
-            $addedTs   = !empty($rp['rights_added_at']) ? strtotime($rp['rights_added_at']) : time();
-            $daysHeld  = (int)floor((time() - $addedTs) / 86400);
-            $canRel    = ($daysHeld >= 365 || $isCommishUser);
-            $daysLeft  = max(0, 365 - $daysHeld);
-            ?>
-            <tr style="border-bottom:1px solid #334155;">
-                <td style="padding:9px 10px;"><strong><?= htmlspecialchars($rp['first_name'] . ' ' . $rp['last_name']) ?></strong></td>
-                <td style="padding:9px 10px;"><?= htmlspecialchars($rp['position']) ?></td>
-                <td style="padding:9px 10px;"><?= (int)($rp['age'] ?? 0) ?: '—' ?></td>
-                <td style="padding:9px 10px;"><strong style="color:#38bdf8;"><?= (int)$rp['overall_rating'] ?></strong></td>
-                <td style="padding:9px 10px; color:#cbd5e1;">
-                    $<?= number_format((int)$rp['salary']) ?> (<?= (int)$rp['contract_years'] ?>y)
-                </td>
-                <td style="padding:9px 10px;">
-                    <?php if ($isElig): ?>
-                        <span style="background:#065f46; color:#6ee7b7; border:1px solid #10b981; padding:2px 7px; border-radius:4px; font-size:0.78em; font-weight:bold;">
-                Eligible (<?= htmlspecialchars($reason) ?>)
-            </span>
-                    <?php else: ?>
-                        <span style="background:#7f1d1d; color:#fca5a5; border:1px solid #ef4444; padding:2px 7px; border-radius:4px; font-size:0.78em; font-weight:bold;">
-                Ineligible &bull; Did Not Play Prior Season
-            </span>
-                    <?php endif; ?>
-                    <div style="font-size:0.78em; color:#94a3b8; margin-top:3px;">
-                        <?= $daysHeld >= 365 ? '1-Yr Hold Complete (Release Unlocked)' : "Release unlocks in {$daysLeft} day(s)" ?>
-                    </div>
-                </td>
+    <div style="overflow-x:auto;">
+        <table style="width:100%; border-collapse:collapse; background:#1e293b; border-radius:8px; overflow:hidden;">
+            <tr style="background:#020617; color:#38bdf8;">
+                <th style="padding:10px; text-align:left;">Player</th>
+                <th style="padding:10px; text-align:left;">Pos</th>
+                <th style="padding:10px; text-align:left;">Age</th>
+                <th style="padding:10px; text-align:left;">OVR</th>
+                <th style="padding:10px; text-align:left;">Saved Contract</th>
+                <th style="padding:10px; text-align:left;">Status / 1-Yr Release Timer</th>
                 <?php if ($isTeamGM || $isCommishUser): ?>
-                    <td style="padding:9px 10px;">
-                        <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                            <?php if ($isElig || $isCommishUser): ?>
-                                <form method="post" style="display:flex; gap:5px; margin:0;">
-                                    <input type="hidden" name="gm_roster_action" value="activate_rights_player">
-                                    <input type="hidden" name="player_id" value="<?= (int)$rp['player_id'] ?>">
-                                    <button type="submit" name="dest_roster" value="PRO"
-                                            style="background:#0284c7; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:0.78em;"
-                                            onclick="return confirm('Activate <?= htmlspecialchars($rp['first_name'] . ' ' . $rp['last_name'], ENT_QUOTES) ?> to the NHL roster?');">
-                                        To NHL
-                                    </button>
-                                    <button type="submit" name="dest_roster" value="AHL"
-                                            style="background:#334155; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:0.78em;"
-                                            onclick="return confirm('Activate <?= htmlspecialchars($rp['first_name'] . ' ' . $rp['last_name'], ENT_QUOTES) ?> to the AHL roster?');">
-                                        To AHL
-                                    </button>
-                                </form>
-                            <?php else: ?>
-                                <small style="color:#94a3b8;">Locked until eligible</small>
-                            <?php endif; ?>
-
-                            <?php if ($canRel): ?>
-                                <form method="post" style="margin:0;">
-                                    <input type="hidden" name="gm_roster_action" value="release_rights_player">
-                                    <input type="hidden" name="player_id" value="<?= (int)$rp['player_id'] ?>">
-                                    <button type="submit"
-                                            style="background:#dc2626; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:0.78em;"
-                                            onclick="return confirm('Release <?= htmlspecialchars($rp['first_name'] . ' ' . $rp['last_name'], ENT_QUOTES) ?> to Free Agency?');">
-                                        Release
-                                    </button>
-                                </form>
-                            <?php endif; ?>
-                        </div>
-                    </td>
+                    <th style="padding:10px; text-align:left;">Actions</th>
                 <?php endif; ?>
             </tr>
-        <?php endforeach; ?>
-    </table>
-</div>
+            <?php foreach ($rightsPlayers as $rp):
+                $isElig    = !empty($rp['is_eligible_activate']);
+                $reason    = trim($rp['rights_reason'] ?? strtoupper($rp['roster_status'] ?? 'Rights Owned'));
+                $addedTs   = !empty($rp['rights_added_at']) ? strtotime($rp['rights_added_at']) : time();
+                $daysHeld  = (int)floor((time() - $addedTs) / 86400);
+                $canRel    = ($daysHeld >= 365 || $isCommishUser);
+                $daysLeft  = max(0, 365 - $daysHeld);
+                ?>
+                <tr style="border-bottom:1px solid #334155;">
+                    <td style="padding:9px 10px;"><strong><?= htmlspecialchars($rp['first_name'] . ' ' . $rp['last_name']) ?></strong></td>
+                    <td style="padding:9px 10px;"><?= htmlspecialchars($rp['position']) ?></td>
+                    <td style="padding:9px 10px;"><?= (int)($rp['age'] ?? 0) ?: '—' ?></td>
+                    <td style="padding:9px 10px;"><strong style="color:#38bdf8;"><?= (int)$rp['overall_rating'] ?></strong></td>
+                    <td style="padding:9px 10px; color:#cbd5e1;">
+                        $<?= number_format((int)$rp['salary']) ?> (<?= (int)$rp['contract_years'] ?>y)
+                    </td>
+                    <td style="padding:9px 10px;">
+                        <?php if ($isElig): ?>
+                            <span style="background:#065f46; color:#6ee7b7; border:1px solid #10b981; padding:2px 7px; border-radius:4px; font-size:0.78em; font-weight:bold;">
+                            Eligible (<?= htmlspecialchars($reason) ?>)
+                        </span>
+                        <?php else: ?>
+                            <span style="background:#7f1d1d; color:#fca5a5; border:1px solid #ef4444; padding:2px 7px; border-radius:4px; font-size:0.78em; font-weight:bold;">
+                            Ineligible &bull; Did Not Play Prior Season
+                        </span>
+                        <?php endif; ?>
+                        <div style="font-size:0.78em; color:#94a3b8; margin-top:3px;">
+                            <?= $daysHeld >= 365 ? '1-Yr Hold Complete (Release Unlocked)' : "Release unlocks in {$daysLeft} day(s)" ?>
+                        </div>
+                    </td>
+                    <?php if ($isTeamGM || $isCommishUser): ?>
+                        <td style="padding:9px 10px;">
+                            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                                <?php if ($isElig || $isCommishUser): ?>
+                                    <form method="post" style="display:flex; gap:5px; margin:0;">
+                                        <input type="hidden" name="gm_roster_action" value="activate_rights_player">
+                                        <input type="hidden" name="player_id" value="<?= (int)$rp['player_id'] ?>">
+                                        <button type="submit" name="dest_roster" value="PRO"
+                                                style="background:#0284c7; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:0.78em;"
+                                                onclick="return confirm('Activate <?= htmlspecialchars($rp['first_name'] . ' ' . $rp['last_name'], ENT_QUOTES) ?> to the NHL roster?');">
+                                            To NHL
+                                        </button>
+                                        <button type="submit" name="dest_roster" value="AHL"
+                                                style="background:#334155; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:0.78em;"
+                                                onclick="return confirm('Activate <?= htmlspecialchars($rp['first_name'] . ' ' . $rp['last_name'], ENT_QUOTES) ?> to the AHL roster?');">
+                                            To AHL
+                                        </button>
+                                    </form>
+                                <?php else: ?>
+                                    <small style="color:#94a3b8;">Locked until eligible</small>
+                                <?php endif; ?>
+
+                                <?php if ($canRel): ?>
+                                    <form method="post" style="margin:0;">
+                                        <input type="hidden" name="gm_roster_action" value="release_rights_player">
+                                        <input type="hidden" name="player_id" value="<?= (int)$rp['player_id'] ?>">
+                                        <button type="submit"
+                                                style="background:#dc2626; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:0.78em;"
+                                                onclick="return confirm('Release <?= htmlspecialchars($rp['first_name'] . ' ' . $rp['last_name'], ENT_QUOTES) ?> to Free Agency?');">
+                                            Release
+                                        </button>
+                                    </form>
+                                <?php endif; ?>
+                            </div>
+                        </td>
+                    <?php endif; ?>
+                </tr>
+            <?php endforeach; ?>
+        </table>
+    </div>
 <?php endif; ?>
 
 <h2 style="margin-top:28px; color:#38bdf8;">
@@ -1011,78 +1120,80 @@ $isCommishUser = (!empty($_SESSION['is_commish']) || !empty($_SESSION['is_admin'
         No drafted prospects currently listed for this team.
     </div>
 <?php else: ?>
-    <div style="overflow-x:auto;">
-        <table style="width:100%; border-collapse:collapse; background:#1e293b; border-radius:8px; overflow:hidden;">
-            <tr style="background:#020617; color:#38bdf8;">
-                <th style="padding:10px; text-align:left;">Player</th>
-                <th style="padding:10px; text-align:left;">Pos</th>
-                <th style="padding:10px; text-align:left;">Age</th>
-                <th style="padding:10px; text-align:left;">Draft Year</th>
-                <th style="padding:10px; text-align:left;">Pick #</th>
-                <th style="padding:10px; text-align:left;">Fixed Term &amp; ELC Range</th>
-                <?php if ($isTeamGM || $isCommishUser): ?>
-                    <th style="padding:10px; text-align:left;">Negotiate Salary &amp; Sign</th>
-                <?php endif; ?>
-            </tr>
-            <?php foreach ($teamProspects as $pr):
-                $pickNum   = !empty($pr['overall_pick']) ? (int)$pr['overall_pick'] : (int)($pr['notes'] ?? 0);
-                $draftYear = (int)($pr['draft_year'] ?? 2025);
-                $rawAge    = (int)($pr['age'] ?? 0);
-                $pAge      = ($rawAge > 18) ? $rawAge : (($draftYear > 0 && $draftYear < 2026) ? (2026 - $draftYear + 18) : 18);
-                $elcYrs    = ($pAge <= 21) ? 3 : (($pAge <= 23) ? 2 : 1);
-                $elcMin    = 775000;
-                $elcMax    = ($draftYear >= 2024) ? 975000 : 950000;
-                ?>
-                <tr style="border-bottom:1px solid #334155;">
-                    <td style="padding:9px 10px;"><strong><?= htmlspecialchars(trim($pr['first_name'] . ' ' . $pr['last_name'])) ?></strong></td>
-                    <td style="padding:9px 10px;"><?= htmlspecialchars($pr['position'] ?? '—') ?></td>
-                    <td style="padding:9px 10px;"><?= $pAge ?></td>
-                    <td style="padding:9px 10px;"><?= $draftYear > 0 ? $draftYear : '—' ?></td>
-                    <td style="padding:9px 10px; color:#38bdf8; font-weight:bold;"><?= $pickNum > 0 ? '#' . $pickNum : '—' ?></td>
-                    <td style="padding:9px 10px; font-size:0.88em;">
-                        <strong style="color:#4ade80;"><?= $elcYrs ?> yr<?= $elcYrs > 1 ? 's' : '' ?> (Fixed)</strong>
-                        <div style="color:#94a3b8; font-size:0.85em;">$775k &ndash; $<?= number_format($elcMax / 1000) ?>k</div>
-                    </td>
-                    <?php if ($isTeamGM || $isCommishUser): ?>
-                        <td style="padding:9px 10px;">
-                            <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
-                                <form method="post" style="display:flex; gap:5px; align-items:center; margin:0;">
-                                    <input type="hidden" name="gm_roster_action" value="sign_prospect_elc">
-                                    <input type="hidden" name="prospect_id" value="<?= (int)$pr['prospect_id'] ?>">
-                                    <input type="number" name="elc_salary" value="<?= $elcMax ?>" min="<?= $elcMin ?>" max="<?= $elcMax ?>" step="5000"
-                                           title="ELC Salary ($<?= number_format($elcMin) ?> - $<?= number_format($elcMax) ?>)"
-                                           style="width:105px; padding:4px 7px; border-radius:4px; border:1px solid #475569; background:#0f172a; color:#fff; font-size:0.82em;" required>
-                                    <button type="submit" name="dest_roster" value="AHL"
-                                            style="background:#16a34a; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:0.78em;">
-                                        Sign AHL
-                                    </button>
-                                    <button type="submit" name="dest_roster" value="PRO"
-                                            style="background:#0284c7; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:0.78em;">
-                                        Sign NHL
-                                    </button>
-                                </form>
+<div style="overflow-x:auto;">
+    <table style="width:100%; border-collapse:collapse; background:#1e293b; border-radius:8px; overflow:hidden;">
+        <tr style="background:#020617; color:#38bdf8;">
+            <th style="padding:10px; text-align:left;">Player</th>
+            <th style="padding:10px; text-align:left;">Pos</th>
+            <th style="padding:10px; text-align:left;">Age</th>
+            <th style="padding:10px; text-align:left;">Draft Year</th>
+            <th style="padding:10px; text-align:left;">Pick #</th>
+            <th style="padding:10px; text-align:left;">Fixed Term &amp; ELC Range</th>
+            <?php if ($isTeamGM || $isCommishUser): ?>
+                <th style="padding:10px; text-align:left;">Negotiate Salary &amp; Sign</th>
+            <?php endif; ?>
+        </tr>
+        <?php foreach ($teamProspects as $pr):
+        $pickNum   = !empty($pr['overall_pick']) ? (int)$pr['overall_pick'] : (int)($pr['notes'] ?? 0);
+        $draftYear = (int)($pr['draft_year'] ?? 2025);
+        $rawAge    = (int)($pr['age'] ?? 0);
+        $pAge      = ($rawAge > 18) ? $rawAge : (($draftYear > 0 && $draftYear < 2026) ? (2026 - $draftYear + 18) : 18);
+        $elcYrs    = ($pAge <= 21) ? 3 : (($pAge <= 23) ? 2 : 1);
+        $elcMin    = 775000;
+        $elcMax    = ($draftYear >= 2024) ? 975000 : 950000;
+        ?>
+        <tr style="border-bottom:1px solid #334155;">
+            <td style="padding:9px 10px;"><strong><?= htmlspecialchars(trim($pr['first_name'] . ' ' . $pr['last_name'])) ?></strong></td>
+            <td style="padding:9px 10px;"><?= htmlspecialchars($pr['position'] ?? '—') ?></td>
+            <td style="padding:9px 10px;"><?= $pAge ?></td>
+            <td style="padding:9px 10px;"><?= $draftYear > 0 ? $draftYear : '—' ?></td>
+            <td style="padding:9px 10px; color:#38bdf8; font-weight:bold;"><?= $pickNum > 0 ? '#' . $pickNum : '—' ?></td>
+            <td style="padding:9px 10px; font-size:0.88em;">
+                <strong style="color:#4ade80;"><?= $elcYrs ?> yr<?= $elcYrs > 1 ? 's' : '' ?> (Fixed)</strong>
+                <div style="color:#94a3b8; font-size:0.85em;">$775k &ndash; $<?= number_format($elcMax / 1000) ?>k</div>
+            </td>
+            <?php if ($isTeamGM || $isCommishUser): ?>
+                <td style="padding:9px 10px;">
+                    <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                        <form method="post" style="display:flex; gap:5px; align-items:center; margin:0;">
+                            <input type="hidden" name="gm_roster_action" value="sign_prospect_elc">
+                            <input type="hidden" name="prospect_id" value="<?= (int)$pr['prospect_id'] ?>">
+                            <input type="number" name="elc_salary" value="<?= $elcMax ?>" min="<?= $elcMin ?>" max="<?= $elcMax ?>" step="5000"
+                                   title="ELC Salary ($<?= number_format($elcMin) ?> - $<?= number_format($elcMax) ?>)"
+                                   style="width:105px; padding:4px 7px; border-radius:4px; border:1px solid #475569; background:#0f172a; color:#fff; font-size:0.82em;" required>
+                            <button type="submit" name="dest_roster" value="AHL"
+                                    style="background:#16a34a; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:0.78em;">
+                                Sign AHL
+                            </button>
+                            <button type="submit" name="dest_roster" value="PRO"
+                                    style="background:#0284c7; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:0.78em;">
+                                Sign NHL
+                            </button>
+                        </form>
 
-                                <form method="post" style="margin:0;">
-                                    <input type="hidden" name="gm_roster_action" value="release_prospect">
-                                    <input type="hidden" name="prospect_id" value="<?= (int)$pr['prospect_id'] ?>">
-                                    <button type="submit"
-                                            style="background:#dc2626; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:0.78em;"
-                                            onclick="return confirm('Relinquish draft rights to <?= htmlspecialchars($pr['first_name'] . ' ' . $pr['last_name'], ENT_QUOTES) ?>?');">
-                                        Release
-                                    </button>
-                                </form>
-                            </div>
-                        </td>
-                    <?php endif; ?>
-                </tr>
-            <?php endforeach; ?>
-        </table>
-    </div>
+                        <form method="post" style="margin:0;">
+                            <input type="hidden" name="gm_roster_action" value="release_prospect">
+                            <input type="hidden" name="prospect_id" value="<?= (int)$pr['prospect_id'] ?>">
+                            <button type="submit"
+                                    style="background:#dc2626; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:0.78em;"
+                                    onclick="return confirm('Relinquish draft rights to <?= htmlspecialchars($pr['first_name'] . ' ' . $pr['last_name'], ENT_QUOTES) ?>?');">
+                                Release
+                            </button>
+                        </form>
+                    </div>
+                </td>
+            <?php endif; ?>
+        </tr>
+        <?php endforeach; ?>
+    </table>
+</div>
 <?php endif; ?>
 
 
 </body>
 </html>
+
+
 
 
 
