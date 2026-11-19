@@ -39,6 +39,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_
     $msg = "NHL Salary Cap saved for {$label}: $" . number_format($capMin) . " Floor / $" . number_format($capMax) . " Ceiling.";
 }
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_retention') {
+    $retPlayerId = (int)($_POST['ret_player_id'] ?? 0);
+    $retTeamId   = (int)($_POST['ret_team_id'] ?? 0);
+    $retPct      = (float)($_POST['ret_percent'] ?? 0);
+    $retAmount   = (int)($_POST['ret_amount'] ?? 0);
+    $retYears    = max(1, (int)($_POST['ret_years'] ?? 1));
+    $deductSal   = !empty($_POST['deduct_from_player']);
+    $bypassRules = !empty($_POST['bypass_rules']);
+
+    if ($retPlayerId > 0 && $retTeamId > 0 && $retPct > 0 && $retPct <= 50) {
+        $pStmt = $pdo->prepare("SELECT salary, first_name, last_name FROM players WHERE player_id = ?");
+        $pStmt->execute(array($retPlayerId));
+        $pInfo = $pStmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($pInfo) {
+            if ($retAmount <= 0) {
+                $retAmount = (int)round((int)$pInfo['salary'] * ($retPct / 100));
+            }
+
+            $err = $bypassRules ? '' : validateSalaryRetention($pdo, $retTeamId, $retPlayerId, $retPct, $retAmount);
+            if ($err !== '') {
+                $msg = "Retention Blocked: " . $err;
+            } else {
+                $pdo->beginTransaction();
+                $pdo->prepare("
+                    INSERT INTO retained_salaries (player_id, retaining_team_id, retained_percent, retained_cap_hit, years_remaining)
+                    VALUES (?, ?, ?, ?, ?)
+                ")->execute(array($retPlayerId, $retTeamId, $retPct, $retAmount, $retYears));
+
+                if ($deductSal) {
+                    $newSal = max(0, (int)$pInfo['salary'] - $retAmount);
+                    $pdo->prepare("UPDATE players SET salary = ? WHERE player_id = ?")->execute(array($newSal, $retPlayerId));
+                }
+                $pdo->commit();
+                $msg = "Added {$retPct}% retention ($" . number_format($retAmount) . "/yr for {$retYears} yr) on {$pInfo['first_name']} {$pInfo['last_name']}.";
+            }
+        }
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'delete_retention') {
+    $retId      = (int)($_POST['retention_id'] ?? 0);
+    $restoreSal = !empty($_POST['restore_salary']);
+
+    if ($retId > 0) {
+        $rStmt = $pdo->prepare("SELECT player_id, retained_cap_hit FROM retained_salaries WHERE id = ?");
+        $rStmt->execute(array($retId));
+        $rRow = $rStmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($rRow) {
+            $pdo->beginTransaction();
+            if ($restoreSal) {
+                $pdo->prepare("UPDATE players SET salary = salary + ? WHERE player_id = ?")
+                        ->execute(array((int)$rRow['retained_cap_hit'], (int)$rRow['player_id']));
+            }
+            $pdo->prepare("DELETE FROM retained_salaries WHERE id = ?")->execute(array($retId));
+            $pdo->commit();
+            $msg = "Retained salary entry #{$retId} removed.";
+        }
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_roles') {
     $tcIds    = array_map('intval', $_POST['tc'] ?? array());
     $faIds    = array_map('intval', $_POST['fa'] ?? array());
@@ -78,7 +140,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'trans
         exit;
     }
 }
-
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_picks') {
     $pickOwners = $_POST['pick_owner'] ?? array();
 
@@ -134,6 +195,23 @@ $users = $pdo->query("
 
 $capLimits   = getLeagueCapLimits($pdo);
 $capSchedule = $pdo->query("SELECT * FROM nhl_cap_schedule ORDER BY season_year ASC")->fetchAll(PDO::FETCH_ASSOC);
+
+$allPlayersForRet = $pdo->query("
+    SELECT p.player_id, p.first_name, p.last_name, p.salary, COALESCE(p.contract_years, 1) AS contract_years, t.abbreviation AS team_abbr
+    FROM players p
+    LEFT JOIN teams t ON p.team_id = t.team_id
+    WHERE COALESCE(p.is_retired, FALSE) = FALSE AND p.salary > 0
+    ORDER BY p.last_name ASC, p.first_name ASC
+")->fetchAll(PDO::FETCH_ASSOC);
+
+$activeRetentions = $pdo->query("
+    SELECT rs.*, p.first_name, p.last_name, p.salary AS current_salary, t.name AS team_name, t.abbreviation AS team_abbr
+    FROM retained_salaries rs
+    JOIN players p ON rs.player_id = p.player_id
+    JOIN teams t ON rs.retaining_team_id = t.team_id
+    WHERE rs.years_remaining > 0
+    ORDER BY t.abbreviation ASC, p.last_name ASC
+")->fetchAll(PDO::FETCH_ASSOC);
 ?>
 
 <!DOCTYPE html>
@@ -222,6 +300,87 @@ $capSchedule = $pdo->query("SELECT * FROM nhl_cap_schedule ORDER BY season_year 
                     <td style="color:#4ade80;">$<?= number_format((int)$cs['cap_max']) ?></td>
                     <td>
                         <?= $isActive ? '<span style="color:#38bdf8; font-weight:bold;">Active Season</span>' : '<span style="color:#94a3b8;">Scheduled</span>' ?>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+        </table>
+    <?php endif; ?>
+</div>
+<div class="card">
+    <h2 style="margin-top:0;">Retained Salary Manager (NHL Cap Retention)</h2>
+    <p style="color:#94a3b8; font-size:0.9em; margin-top:0;">
+        Add existing league salary retentions or view active retained cap slots. Max <strong>3 slots</strong> per team, <strong>2 retentions</strong> per player, and <strong>15%</strong> of the cap ceiling.
+    </p>
+
+    <form method="post" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px;">
+        <input type="hidden" name="action" value="add_retention">
+        <div>
+            <label style="display:block; font-size:0.82em; color:#94a3b8; margin-bottom:4px;">Player</label>
+            <select name="ret_player_id" style="min-width:220px;" required>
+                <option value="">-- Select Player --</option>
+                <?php foreach ($allPlayersForRet as $pl): ?>
+                    <option value="<?= (int)$pl['player_id'] ?>">
+                        <?= htmlspecialchars("{$pl['last_name']}, {$pl['first_name']} ({$pl['team_abbr']} - $" . number_format((int)$pl['salary']) . ")") ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:0.82em; color:#94a3b8; margin-bottom:4px;">Retaining Team</label>
+            <select name="ret_team_id" required>
+                <option value="">-- Team --</option>
+                <?php foreach ($allTeamsList as $tm): ?>
+                    <option value="<?= (int)$tm['team_id'] ?>"><?= htmlspecialchars("{$tm['abbreviation']} - {$tm['name']}") ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:0.82em; color:#94a3b8; margin-bottom:4px;">Retain % (1-50)</label>
+            <input type="number" name="ret_percent" step="0.01" min="1" max="50" value="50" style="width:95px;" required>
+        </div>
+        <div>
+            <label style="display:block; font-size:0.82em; color:#94a3b8; margin-bottom:4px;">Cap Hit $ (0 = Auto)</label>
+            <input type="number" name="ret_amount" min="0" step="1000" value="0" style="width:130px;">
+        </div>
+        <div>
+            <label style="display:block; font-size:0.82em; color:#94a3b8; margin-bottom:4px;">Years Left</label>
+            <input type="number" name="ret_years" min="1" max="8" value="1" style="width:75px;" required>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:4px; font-size:0.82em;">
+            <label style="cursor:pointer;"><input type="checkbox" name="deduct_from_player" value="1"> Deduct from player's current salary</label>
+            <label style="cursor:pointer;"><input type="checkbox" name="bypass_rules" value="1"> Bypass NHL limits (Force Add)</label>
+        </div>
+        <button type="submit" class="btn">Add Retention</button>
+    </form>
+
+    <?php if (empty($activeRetentions)): ?>
+        <p style="color:#94a3b8; font-style:italic; margin-bottom:0;">No active retained salaries in the league.</p>
+    <?php else: ?>
+        <table>
+            <tr>
+                <th>Retaining Team</th>
+                <th>Player</th>
+                <th>Retained %</th>
+                <th>Dead Cap Hit / Yr</th>
+                <th>Years Remaining</th>
+                <th>Action</th>
+            </tr>
+            <?php foreach ($activeRetentions as $ar): ?>
+                <tr>
+                    <td><strong><?= htmlspecialchars($ar['team_abbr']) ?></strong> <small style="color:#94a3b8;">(<?= htmlspecialchars($ar['team_name']) ?>)</small></td>
+                    <td><?= htmlspecialchars("{$ar['first_name']} {$ar['last_name']}") ?></td>
+                    <td style="color:#fbbf24; font-weight:bold;"><?= rtrim(rtrim(number_format((float)$ar['retained_percent'], 2), '0'), '.') ?>%</td>
+                    <td style="color:#f87171; font-weight:bold;">$<?= number_format((int)$ar['retained_cap_hit']) ?></td>
+                    <td><?= (int)$ar['years_remaining'] ?> yr(s)</td>
+                    <td>
+                        <form method="post" style="display:flex; gap:8px; align-items:center;" onsubmit="return confirm('Remove this retained salary record?');">
+                            <input type="hidden" name="action" value="delete_retention">
+                            <input type="hidden" name="retention_id" value="<?= (int)$ar['id'] ?>">
+                            <label style="font-size:0.8em; color:#94a3b8; cursor:pointer;">
+                                <input type="checkbox" name="restore_salary" value="1"> Add $ back to player
+                            </label>
+                            <button type="submit" class="btn btn-warn" style="padding:5px 10px; font-size:0.82em;">Remove</button>
+                        </form>
                     </td>
                 </tr>
             <?php endforeach; ?>
@@ -352,6 +511,9 @@ $capSchedule = $pdo->query("SELECT * FROM nhl_cap_schedule ORDER BY season_year 
 
 </body>
 </html>
+
+
+
 
 
 
