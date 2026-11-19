@@ -6,6 +6,18 @@ if (empty($_SESSION['is_commish']) && empty($_SESSION['is_admin'])) {
     die("Commissioner access only.");
 }
 
+/*
+ * FIX:
+ * - Never fan one name's statistics out to every player with that name.
+ * - For MoneyPuck imports, match an existing NHL ID first. If it is not
+ *   linked yet, use a unique normalized name match regardless of position.
+ *   When names are duplicated, use normalized position (L=LW, R=RW) to
+ *   distinguish records; never guess when the match remains ambiguous.
+ * - Save the external playerId in nhl_player_id for future imports.
+ * - Apply only the roster-confirmed full-name aliases listed below to both
+ *   NHL and AHL CSV imports. AHL still requires a unique name + position match.
+ * - Never create player records; unresolved or ambiguous rows are skipped.
+ */
 $pdo->exec("ALTER TABLE players ADD COLUMN IF NOT EXISTS ahl_ovr INT NULL");
 $pdo->exec("ALTER TABLE players ADD COLUMN IF NOT EXISTS ahl_gp INT NOT NULL DEFAULT 0");
 $pdo->exec("ALTER TABLE players ADD COLUMN IF NOT EXISTS nhl_ovr INT NULL");
@@ -57,13 +69,16 @@ function confirmedPlayerNameAliases(): array {
         'Aatu Rty' => 'Aatu Raty',
         'Alexis Lafrenire' => 'Alexis Lafreniere',
         'Mathew Dumba' => 'Matt Dumba',
+        'J.J. Moser' => 'Janis Moser',
+        'Max Shabanov' => 'Maxim Shabanov',
+        'Will Borgen' => 'William Borgen',
         'Isac Lundestrm' => 'Isac Lundestrom',
         'Olli Mtt' => 'Olli Maatta',
         'Bo Groulx' => 'Benoit-Olivier Groulx',
         'Tony DeAngelo' => 'Anthony DeAngelo',
         'JJ Peterka' => 'John-Jason Peterka',
         'Max Crozier' => 'Maxwell Crozier',
-        'Nick Robertson' => 'Nicholas Robertson',
+        'Nicholas Robertson' => 'Nick Robertson',
         'Tommy Novak' => 'Thomas Novak',
         'Danil Zhilkin' => 'Danny Zhilkin',
         'Josh Morrissey' => 'Joshua Morrissey',
@@ -214,6 +229,21 @@ function findUniqueNamePositionMatch(array $nameMap, string $key, string $positi
     return count($matches) === 1 ? $matches : [];
 }
 
+function findUniqueConfirmedAhlAliasMatch(array $nameMap, string $key, string $rawName): array {
+    $sourceKey = cleanMpName($rawName);
+    $isConfirmedAlias = false;
+    foreach (confirmedPlayerNameAliases() as $source => $target) {
+        if (cleanMpName($source) === $sourceKey) {
+            $isConfirmedAlias = true;
+            break;
+        }
+    }
+    if (!$isConfirmedAlias) return [];
+
+    $candidates = $nameMap[$key] ?? [];
+    return count($candidates) === 1 ? $candidates : [];
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $fileType = $_POST['mp_type'] ?? 'skaters';
     $uploadError = $_FILES['mp_csv']['error'] ?? UPLOAD_ERR_NO_FILE;
@@ -360,6 +390,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if ($mode === 'goalies') {
                     $matches = findUniqueNamePositionMatch($nameMap, $key, 'G');
+                    if (!$matches) $matches = findUniqueConfirmedAhlAliasMatch($nameMap, $key, $rawName);
                     $prospectMatches = [];
                     if (!$matches && count($nameMap[$key] ?? []) === 0) {
                         $prospectMatches = findUniqueNamePositionMatch($prospectNameMap, $key, 'G');
@@ -401,6 +432,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($pos === 'G') continue;
 
                     $matches = findUniqueNamePositionMatch($nameMap, $key, $pos);
+                    if (!$matches) $matches = findUniqueConfirmedAhlAliasMatch($nameMap, $key, $rawName);
                     $prospectMatches = [];
                     if (!$matches && count($nameMap[$key] ?? []) === 0) {
                         $prospectMatches = findUniqueNamePositionMatch($prospectNameMap, $key, $pos);
@@ -478,6 +510,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             while ($msgType !== 'error' && ($row = fgetcsv($fh)) !== false) {
+
                 $sit = strtolower(trim((string)mpValue($row, $colIdx, ['situation'], '')));
                 if ($sit !== 'all') continue;
 
@@ -603,7 +636,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 } else {
                     if (strtoupper($position) === 'G') continue;
-                    // Header names below match the supplied MoneyPuck export.
+
                     $goals = (float)mpValue($row, $colIdx, ['I_F_goals'], 0);
                     $a1 = (float)mpValue($row, $colIdx, ['I_F_primaryAssists'], 0);
                     $a2 = (float)mpValue($row, $colIdx, ['I_F_secondaryAssists'], 0);
@@ -612,8 +645,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $blocks = (float)mpValue($row, $colIdx, ['I_F_blockedShotAttempts'], 0);
                     $individualXg = (float)mpValue($row, $colIdx, ['I_F_xGoals'], 0);
                     $onIceXgPct = (float)mpValue($row, $colIdx, ['onIce_xGoalsPercentage'], 0.50);
-                    // This export supplies on-ice xG percentage rather than
-                    // separate on-ice for/against xG totals.
+
                     $onXga = 0.0;
                     $onXgf = 0.0;
 
@@ -699,7 +731,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $msg = "The CSV was read, but no player or prospect ratings were updated. Check that player names/positions match your database and that the file contains situation=all rows. Skipped {$skippedAmbiguous} ambiguous and {$skippedUnmatched} unmatched rows.";
         }
     }
-    } // upload succeeded
+    }
 }
 ?>
 <!DOCTYPE html>
