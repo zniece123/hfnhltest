@@ -6,6 +6,17 @@ if (empty($_SESSION['is_commish']) && empty($_SESSION['is_admin'])) {
     die("Commissioner access only.");
 }
 
+/*
+ * FIX:
+ * - Never fan one name's statistics out to every player with that name.
+ * - For MoneyPuck imports, match an existing NHL ID first. If it is not
+ *   linked yet, use a unique normalized name match regardless of position.
+ *   When names are duplicated, use normalized position (L=LW, R=RW) to
+ *   distinguish records; never guess when the match remains ambiguous.
+ * - Save the external playerId in nhl_player_id for future imports.
+ * - For AHL imports (which do not provide a stable player ID in this format),
+ *   update only a unique name + position match. Ambiguous matches are skipped.
+ */
 $pdo->exec("ALTER TABLE players ADD COLUMN IF NOT EXISTS ahl_ovr INT NULL");
 $pdo->exec("ALTER TABLE players ADD COLUMN IF NOT EXISTS ahl_gp INT NOT NULL DEFAULT 0");
 $pdo->exec("ALTER TABLE players ADD COLUMN IF NOT EXISTS nhl_ovr INT NULL");
@@ -79,6 +90,7 @@ function blendTwoWayRating(?int $nhlOvr, int $nhlGp, ?int $ahlOvr, int $ahlGp): 
     return $ahlOvr ?? 63;
 }
 
+/** Return only an exact external NHL ID match, when one is already linked. */
 function findByNhlId(array $allPlayers, string $externalId): array {
     $matches = [];
     foreach ($allPlayers as $p) {
@@ -89,10 +101,25 @@ function findByNhlId(array $allPlayers, string $externalId): array {
     return $matches;
 }
 
+/**
+ * Normalize position labels used by MoneyPuck and the site database.
+ * MoneyPuck uses L/R while the database commonly stores LW/RW.
+ */
+function normalizeMpPosition(string $position): string {
+    $position = strtoupper(trim($position));
+    if ($position === 'L') return 'LW';
+    if ($position === 'R') return 'RW';
+    return $position;
+}
+
+/**
+ * AHL fallback: name + normalized position must identify exactly one record.
+ * This deliberately remains strict so the AHL importer does not change behavior.
+ */
 function findUniqueNamePositionMatch(array $nameMap, string $key, string $position): array {
     $matches = [];
     foreach (($nameMap[$key] ?? []) as $p) {
-        if (strtoupper(trim((string)$p['position'])) === $position) {
+        if (strtoupper(trim((string)$p['position'])) === strtoupper(trim($position))) {
             $matches[] = $p;
         }
     }
@@ -290,6 +317,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             while ($msgType !== 'error' && ($row = fgetcsv($fh)) !== false) {
+                // MoneyPuck has one row per situation. Only the all-situations
+                // row represents the player's complete season totals.
                 $sit = strtolower(trim((string)mpValue($row, $colIdx, ['situation'], '')));
                 if ($sit !== 'all') continue;
 
@@ -299,11 +328,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $externalId = trim((string)mpValue($row, $colIdx, ['playerId', 'playerid'], ''));
                 $position = strtoupper(trim((string)mpValue($row, $colIdx, ['position'], '')));
 
+                // Prefer the saved NHL ID. If not linked yet, only link a unique
+                // normalized name + position match. Do not fan out by name.
                 $idMatches = ($externalId !== '') ? findByNhlId($allP, $externalId) : [];
                 $nameCandidates = $nameMap[$key] ?? [];
                 $positionCandidates = [];
                 foreach ($nameCandidates as $candidate) {
-                    if (strtoupper(trim((string)$candidate['position'])) === $position) {
+                    if (normalizeMpPosition((string)$candidate['position']) === normalizeMpPosition($position)) {
                         $positionCandidates[] = $candidate;
                     }
                 }
@@ -314,22 +345,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $matches = $idMatches;
                 } elseif (count($idMatches) > 1) {
                     $skipReason = 'Duplicate NHL player ID is linked to multiple database records';
-                } elseif ($position !== '' && count($positionCandidates) === 1) {
+                } elseif (count($nameCandidates) === 1) {
+                    // A unique exact normalized name is a safer match than
+                    // rejecting the player because the two sources disagree
+                    // about his listed position (e.g. C vs L/LW).
+                    $matches = $nameCandidates;
+                } elseif (count($positionCandidates) === 1) {
+                    // For duplicate names, position is used only to disambiguate.
                     $matches = $positionCandidates;
-                    if ($externalId !== '') {
-                        $linkNhlId->execute([$externalId, $matches[0]['player_id'], $externalId]);
-                        $matches[0]['nhl_player_id'] = $externalId;
-                    }
-                } elseif (count($positionCandidates) > 1) {
-                    $skipReason = 'Multiple database players have the same normalized name and position';
-                } elseif (count($nameCandidates) > 0) {
+                } elseif (count($nameCandidates) > 1 && count($positionCandidates) > 1) {
+                    $skipReason = 'Multiple database players share this name and normalized position';
+                } elseif (count($nameCandidates) > 1) {
                     $dbPositions = array_values(array_unique(array_map(function ($candidate) {
                         return (string)$candidate['position'];
                     }, $nameCandidates)));
-                    $skipReason = 'Name exists in database, but MoneyPuck position ' . ($position ?: '(blank)')
-                        . ' does not match database position(s): ' . implode(', ', $dbPositions);
+                    $skipReason = 'Multiple database players share this name; MoneyPuck position '
+                        . ($position ?: '(blank)') . ' does not uniquely identify one. Database positions: '
+                        . implode(', ', $dbPositions);
                 } else {
                     $skipReason = 'No database player has this normalized name';
+                }
+
+                // Link only after the matching decision has produced exactly
+                // one database record. Never overwrite a different NHL ID.
+                if (count($matches) === 1 && $externalId !== '' && empty($matches[0]['nhl_player_id'])) {
+                    $linkNhlId->execute([$externalId, $matches[0]['player_id'], $externalId]);
+                    $matches[0]['nhl_player_id'] = $externalId;
                 }
 
                 if (!$matches) {
@@ -381,6 +422,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 } else {
                     if (strtoupper($position) === 'G') continue;
+                    // Header names below match the supplied MoneyPuck export.
                     $goals = (float)mpValue($row, $colIdx, ['I_F_goals'], 0);
                     $a1 = (float)mpValue($row, $colIdx, ['I_F_primaryAssists'], 0);
                     $a2 = (float)mpValue($row, $colIdx, ['I_F_secondaryAssists'], 0);
@@ -449,7 +491,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $msg = "The CSV was read, but no player profiles were updated. Check that player names/positions match your database and that the file contains situation=all rows. Skipped {$skippedAmbiguous} ambiguous and {$skippedUnmatched} unmatched rows.";
         }
     }
-    } 
+    } // upload succeeded
 }
 ?>
 <!DOCTYPE html>
