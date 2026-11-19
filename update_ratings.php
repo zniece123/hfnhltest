@@ -103,7 +103,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES['mp_csv']['tmp_name'
             while (($row = fgetcsv($fh)) !== false) {
                 if (count($row) < 5) continue;
 
-                $c2 = strtolower(trim(strip_tags((string)($row ?? ''))));
+                $c2 = strtolower(trim(strip_tags((string)($row[2] ?? ''))));
                 if ($c2 === 'player') {
                     $mode   = 'skaters';
                     $colIdx = [];
@@ -122,8 +122,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES['mp_csv']['tmp_name'
                     continue;
                 }
 
-                $jersey  = trim((string)($row ?? ''));
-                $rawName = trim((string)($row ?? ''));
+                $jersey  = trim((string)($row[1] ?? ''));
+                $rawName = trim((string)($row[2] ?? ''));
                 if ($jersey === '' || $rawName === '' || stripos($rawName, 'TOTALS') !== false || stripos($rawName, 'BENCH') !== false || stripos($rawName, 'Empty Net') !== false) {
                     continue;
                 }
