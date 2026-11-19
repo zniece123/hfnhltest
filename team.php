@@ -24,6 +24,21 @@ function requiresWaivers(array $p): bool {
 
 $isAdminUser = (!empty($_SESSION['is_commish']) || !empty($_SESSION['is_admin']));
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAdminUser && !empty($_POST['gm_info_action'])) {
+    if ($_POST['gm_info_action'] === 'update_gm') {
+        $newGmName  = trim($_POST['gm_name'] ?? '');
+        $newGmEmail = trim($_POST['gm_email'] ?? '');
+
+        $pdo->prepare("UPDATE teams SET gm_name = ?, gm_email = ? WHERE team_id = ?")
+                ->execute(array($newGmName ?: null, $newGmEmail ?: null, $team_id));
+        $commMsg = "GM Name and Email updated.";
+    } elseif ($_POST['gm_info_action'] === 'remove_gm') {
+        $pdo->prepare("UPDATE teams SET gm_name = NULL, gm_email = NULL WHERE team_id = ?")
+                ->execute(array($team_id));
+        $commMsg = "GM removed (team marked as Vacant).";
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($isTeamGM || $isAdminUser) && !empty($_POST['gm_roster_action'])) {
     $moveAct = $_POST['gm_roster_action'];
     $pid     = (int)($_POST['player_id'] ?? 0);
@@ -413,6 +428,25 @@ $ahlAffiliates = array(
         'WSH' => 'Hershey Bears',              'WPG' => 'Manitoba Moose'
 );
 
+$nhlArenas = array(
+        'ANA' => 'Honda Center',                  'BOS' => 'TD Garden',
+        'BUF' => 'KeyBank Center',                'CGY' => 'Scotiabank Saddledome',
+        'CAR' => 'Lenovo Center',                 'CHI' => 'United Center',
+        'COL' => 'Ball Arena',                    'CBJ' => 'Nationwide Arena',
+        'DAL' => 'American Airlines Center',      'DET' => 'Little Caesars Arena',
+        'EDM' => 'Rogers Place',                  'FLA' => 'Amerant Bank Arena',
+        'LAK' => 'Crypto.com Arena',              'MIN' => 'Grand Casino Arena',
+        'MTL' => 'Bell Centre',                   'NSH' => 'Bridgestone Arena',
+        'NJD' => 'Prudential Center',             'NYI' => 'UBS Arena',
+        'NYR' => 'Madison Square Garden',         'OTT' => 'Canadian Tire Centre',
+        'PHI' => 'Xfinity Mobile Arena',          'PIT' => 'PPG Paints Arena',
+        'SJS' => 'SAP Center',                    'SEA' => 'Climate Pledge Arena',
+        'STL' => 'Enterprise Center',             'TBL' => 'Benchmark International Arena',
+        'TOR' => 'Scotiabank Arena',              'UTA' => 'Delta Center',
+        'VAN' => 'Rogers Arena',                  'VGK' => 'T-Mobile Arena',
+        'WSH' => 'Capital One Arena',             'WPG' => 'Canada Life Centre'
+);
+
 $teamColors = array(
         'ANA' => array('#F47A38', '#B9975B'), 'BOS' => array('#FFB81C', '#111111'),
         'BUF' => array('#003087', '#FFB81C'), 'CAR' => array('#CE1126', '#111111'),
@@ -434,6 +468,7 @@ $teamColors = array(
 
 $abbr    = strtoupper(trim($team['abbreviation'] ?? ''));
 $nhlName = $team['name'] ?? 'NHL Team';
+$arenaName = $nhlArenas[$abbr] ?? ($team['arena'] ?? 'NHL Arena');
 $ahlName = $ahlAffiliates[$abbr] ?? ($team['ahl_affiliate'] ?? 'AHL Affiliate');
 $gmName  = $team['gm_name'] ?? 'Vacant';
 $c1      = $teamColors[$abbr] ?? ($team['primary_color'] ?? '#0284c7');
@@ -857,14 +892,44 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL', $
         <div class="team-hero-line">
             <strong>GF:</strong> <?= $gf ?> &nbsp;|&nbsp;
             <strong>GA:</strong> <?= $ga ?> &nbsp;|&nbsp;
+            <strong>Arena:</strong> <?= htmlspecialchars($arenaName) ?> &nbsp;|&nbsp;
             <strong>AHL Affiliate:</strong> <?= htmlspecialchars($ahlName) ?>
         </div>
         <div class="team-hero-line">
-            <strong>GM:</strong> <?= htmlspecialchars($gmName) ?> &nbsp;|&nbsp;
+            <strong>GF:</strong> <?= $gf ?> &nbsp;|&nbsp;
+            <strong>GA:</strong> <?= $ga ?> &nbsp;|&nbsp;
+            <strong>AHL Affiliate:</strong> <?= htmlspecialchars($ahlName) ?>
+        </div>
+        <div class="team-hero-line">
+            <strong>GM:</strong> <?= htmlspecialchars($gmName) ?>
+            <?php if (!empty($gmEmail)): ?>
+                (<a href="mailto:<?= htmlspecialchars($gmEmail) ?>" style="color:#38bdf8; text-decoration:none;"><?= htmlspecialchars($gmEmail) ?></a>)
+            <?php endif; ?>
+            &nbsp;|&nbsp;
             <strong>Team Overall:</strong> <?= $avgOvr ?>
+            <?php if ($isAdminUser): ?>
+                <details style="margin-top:8px;">
+                    <summary style="cursor:pointer; color:#fbbf24; font-size:0.84em; font-weight:bold;">Edit / Remove GM Info</summary>
+                    <form method="POST" style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; align-items:center;">
+                        <input type="text" name="gm_name" placeholder="GM Name" value="<?= $gmName !== 'Vacant' ? htmlspecialchars($gmName) : '' ?>"
+                               style="padding:4px 8px; border-radius:4px; border:1px solid #475569; background:#0f172a; color:#fff; font-size:0.85em;">
+                        <input type="email" name="gm_email" placeholder="GM Email" value="<?= htmlspecialchars($gmEmail) ?>"
+                               style="padding:4px 8px; border-radius:4px; border:1px solid #475569; background:#0f172a; color:#fff; font-size:0.85em;">
+                        <button type="submit" name="gm_info_action" value="update_gm"
+                                style="background:#0284c7; color:#fff; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:0.82em; font-weight:bold;">
+                            Save
+                        </button>
+                        <button type="submit" name="gm_info_action" value="remove_gm"
+                                onclick="return confirm('Remove GM and mark team Vacant?');"
+                                style="background:#dc2626; color:#fff; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:0.82em; font-weight:bold;">
+                            Remove GM
+                        </button>
+                    </form>
+                </details>
+            <?php endif; ?>
         </div>
     </div>
-</div>
+
 <?php
 $viewTeamId = (int)($teamId ?? $tid ?? $_GET['id'] ?? $_GET['team_id'] ?? 0);
 if ($viewTeamId > 0):
