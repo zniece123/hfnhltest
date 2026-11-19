@@ -11,14 +11,14 @@ $msgType = 'info';
 
 function cleanMpName(string $name): string {
     $map = [
-        'À'=>'A','Á'=>'A','Â'=>'A','Ã'=>'A','Ä'=>'A','Å'=>'A','Ç'=>'C','È'=>'E','É'=>'E','Ê'=>'E','Ë'=>'E',
-        'Ì'=>'I','Í'=>'I','Î'=>'I','Ï'=>'I','Ñ'=>'N','Ò'=>'O','Ó'=>'O','Ô'=>'O','Õ'=>'O','Ö'=>'O','Ù'=>'U',
-        'Ú'=>'U','Û'=>'U','Ü'=>'U','Ý'=>'Y','à'=>'a','á'=>'a','â'=>'a','ã'=>'a','ä'=>'a','å'=>'a','ç'=>'c',
-        'è'=>'e','é'=>'e','ê'=>'e','ë'=>'e','ì'=>'i','í'=>'i','î'=>'i','ï'=>'i','ñ'=>'n','ò'=>'o','ó'=>'o',
-        'ô'=>'o','õ'=>'o','ö'=>'o','ù'=>'u','ú'=>'u','û'=>'u','ü'=>'u','ý'=>'y','ÿ'=>'y','Č'=>'C','č'=>'c',
-        'Ć'=>'C','ć'=>'c','Ě'=>'E','ě'=>'e','Ł'=>'L','ł'=>'l','Ń'=>'N','ń'=>'n','Ň'=>'N','ň'=>'n','Ř'=>'R',
-        'ř'=>'r','Ś'=>'S','ś'=>'s','Š'=>'S','š'=>'s','Ť'=>'T','ť'=>'t','Ů'=>'U','ů'=>'u','Ź'=>'Z','ź'=>'z',
-        'Ż'=>'Z','ż'=>'z','Ž'=>'Z','ž'=>'z'
+            'À'=>'A','Á'=>'A','Â'=>'A','Ã'=>'A','Ä'=>'A','Å'=>'A','Ç'=>'C','È'=>'E','É'=>'E','Ê'=>'E','Ë'=>'E',
+            'Ì'=>'I','Í'=>'I','Î'=>'I','Ï'=>'I','Ñ'=>'N','Ò'=>'O','Ó'=>'O','Ô'=>'O','Õ'=>'O','Ö'=>'O','Ù'=>'U',
+            'Ú'=>'U','Û'=>'U','Ü'=>'U','Ý'=>'Y','à'=>'a','á'=>'a','â'=>'a','ã'=>'a','ä'=>'a','å'=>'a','ç'=>'c',
+            'è'=>'e','é'=>'e','ê'=>'e','ë'=>'e','ì'=>'i','í'=>'i','î'=>'i','ï'=>'i','ñ'=>'n','ò'=>'o','ó'=>'o',
+            'ô'=>'o','õ'=>'o','ö'=>'o','ù'=>'u','ú'=>'u','û'=>'u','ü'=>'u','ý'=>'y','ÿ'=>'y','Č'=>'C','č'=>'c',
+            'Ć'=>'C','ć'=>'c','Ě'=>'E','ě'=>'e','Ł'=>'L','ł'=>'l','Ń'=>'N','ń'=>'n','Ň'=>'N','ň'=>'n','Ř'=>'R',
+            'ř'=>'r','Ś'=>'S','ś'=>'s','Š'=>'S','š'=>'s','Ť'=>'T','ť'=>'t','Ů'=>'U','ů'=>'u','Ź'=>'Z','ź'=>'z',
+            'Ż'=>'Z','ż'=>'z','Ž'=>'Z','ž'=>'z'
     ];
     $n = strtolower(strtr(trim($name), $map));
     return preg_replace('/[^a-z0-9]/', '', $n);
@@ -84,11 +84,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES['mp_csv']['tmp_name'
                 $ga    = (float)($row[$colIdx['goals'] ?? -1] ?? 0);
                 $shots = (float)($row[$colIdx['ongoal'] ?? -1] ?? 0);
                 $gsax  = $xga - $ga;
-                $svPct = $shots > 0 ? (($shots - $ga) / $shots) : 0.900;
 
-                $base = 76 + ($svPct - 0.905) * 420 + ($gsax * 0.35);
-                if ($gp < 10) $base = min($base, 74);
-                $ovr = clampRating($base, 55, 97);
+                // 1. Bayesian regression on Save %: add 750 "league average (.903)" shots as a prior
+                // Prevents small-sample backups from spiking into elite starter tiers
+                $priorShots     = 750.0;
+                $leagueAvgSv    = 0.903;
+                $regressedSvPct = ($shots + $priorShots) > 0
+                        ? ((($shots - $ga) + ($priorShots * $leagueAvgSv)) / ($shots + $priorShots))
+                        : $leagueAvgSv;
+
+                // 2. Weight GSAx by workload confidence (ramps up to 1.0 at 45+ games)
+                $workloadFactor = min(1.0, $gp / 45.0);
+                $weightedGsax   = $gsax * $workloadFactor;
+
+                // 3. Base rating centered around ~75.5 OVR for an average NHL backup/tandem goalie
+                $base = 75.5 + (($regressedSvPct - $leagueAvgSv) * 480) + ($weightedGsax * 0.28);
+
+                // 4. Hard workload ceilings so low-GP backups cannot outrate established starters
+                if ($gp < 10)      $base = min($base, 73);
+                elseif ($gp < 20)  $base = min($base, 77);
+                elseif ($gp < 30)  $base = min($base, 81);
+                elseif ($gp < 42)  $base = min($base, 85);
+
+                $ovr = clampRating($base, 55, 96);
 
                 foreach ($playerMap[$k] as $match) {
                     if (strtoupper($match['position']) === 'G') {
@@ -106,23 +124,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES['mp_csv']['tmp_name'
                 $onXga  = (float)($row[$colIdx['onice_a_xgoals'] ?? -1] ?? 0);
                 $onXgf  = (float)($row[$colIdx['onice_f_xgoals'] ?? -1] ?? 0);
 
-                $g60   = $hrs > 0.5 ? ($goals / $hrs) : 0;
-                $a60   = $hrs > 0.5 ? (($a1 + $a2 * 0.7) / $hrs) : 0;
-                $sog60 = $hrs > 0.5 ? ($sog / $hrs) : 0;
-                $hit60 = $hrs > 0.5 ? ($hits / $hrs) : 0;
-                $blk60 = $hrs > 0.5 ? ($blocks / $hrs) : 0;
-                $xga60 = $hrs > 0.5 ? ($onXga / $hrs) : 2.6;
-                $xgPct = ($onXgf + $onXga) > 0 ? ($onXgf / ($onXgf + $onXga)) : 0.50;
+                // Regress per-60 rates toward replacement/bottom-6 baseline using a 6-hour (360 min) prior
+                $priorHrs = 6.0;
+                $effHrs   = $hrs + $priorHrs;
 
-                $sh = clampRating(62 + ($g60 * 16.5) + ($sog60 * 1.1));
-                $pa = clampRating(62 + ($a60 * 14.0) + (($xgPct - 0.50) * 45));
-                $sk = clampRating(66 + (($xgPct - 0.50) * 65) + ($sog60 * 0.8));
-                $df = clampRating(64 + ((2.75 - $xga60) * 14.0) + ($blk60 * 1.6));
+                $g60   = ($goals + ($priorHrs * 0.45)) / $effHrs;
+                $a60   = (($a1 + $a2 * 0.7) + ($priorHrs * 0.75)) / $effHrs;
+                $sog60 = ($sog + ($priorHrs * 6.5)) / $effHrs;
+                $hit60 = ($hits + ($priorHrs * 4.5)) / $effHrs;
+                $blk60 = ($blocks + ($priorHrs * 2.2)) / $effHrs;
+                $xga60 = ($onXga + ($priorHrs * 2.65)) / $effHrs;
+                $xgPct = ($onXgf + $onXga + 20.0) > 0 ? (($onXgf + 10.0) / ($onXgf + $onXga + 20.0)) : 0.50;
+
+                // Subtle usage adjustment based on minutes per game (rewards 18+ min top-line/top-pair players)
+                $toiPerGame = $gp > 0 ? ($ice / 60.0) / $gp : 0;
+                $usageBonus = max(-2.0, min(3.5, ($toiPerGame - 14.0) * 0.45));
+
+                $sh = clampRating(62 + ($g60 * 16.5) + ($sog60 * 1.1) + $usageBonus);
+                $pa = clampRating(62 + ($a60 * 14.0) + (($xgPct - 0.50) * 45) + $usageBonus);
+                $sk = clampRating(66 + (($xgPct - 0.50) * 65) + ($sog60 * 0.8) + ($usageBonus * 0.8));
+                $df = clampRating(64 + ((2.75 - $xga60) * 14.0) + ($blk60 * 1.6) + ($usageBonus * 0.8));
                 $ph = clampRating(60 + ($hit60 * 2.1) + ($blk60 * 1.4));
 
                 $rawOvr = ($sk * 0.22) + ($sh * 0.22) + ($pa * 0.22) + ($df * 0.22) + ($ph * 0.12);
-                if ($gp < 12) $rawOvr = min($rawOvr, 73);
-                $ovr = clampRating($rawOvr, 55, 98);
+                if ($gp < 12)     $rawOvr = min($rawOvr, 73);
+                elseif ($gp < 25) $rawOvr = min($rawOvr, 77);
+                $ovr = clampRating($rawOvr, 55, 96);
 
                 foreach ($playerMap[$k] as $match) {
                     if (strtoupper($match['position']) !== 'G') {
@@ -172,18 +199,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES['mp_csv']['tmp_name'
         <div class="row">
             <label>CSV Type:</label>
             <select name="mp_type">
-                <option value="skaters">Skaters CSV (skaters.csv)</option>
-                <option value="goalies">Goalies CSV (goalies.csv)</option>
+                <option value="skaters">Skaters (skaters.csv)</option>
+                <option value="goalies">Goalies (goalies.csv)</option>
             </select>
         </div>
         <div class="row">
-            <label>Select CSV File:</label>
+            <label>Select MoneyPuck CSV File:</label>
             <input type="file" name="mp_csv" accept=".csv" required>
         </div>
-        <button type="submit" class="btn">Upload &amp; Recalculate Player Ratings</button>
+        <button type="submit" class="btn">Upload & Recalculate Ratings</button>
     </form>
 </div>
 
 </body>
 </html>
+
+
 
