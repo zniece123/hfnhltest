@@ -896,39 +896,36 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL', $
             <strong>AHL Affiliate:</strong> <?= htmlspecialchars($ahlName) ?>
         </div>
         <div class="team-hero-line">
-            <strong>GF:</strong> <?= $gf ?> &nbsp;|&nbsp;
-            <strong>GA:</strong> <?= $ga ?> &nbsp;|&nbsp;
-            <strong>AHL Affiliate:</strong> <?= htmlspecialchars($ahlName) ?>
-        </div>
-        <div class="team-hero-line">
             <strong>GM:</strong> <?= htmlspecialchars($gmName) ?>
             <?php if (!empty($gmEmail)): ?>
                 (<a href="mailto:<?= htmlspecialchars($gmEmail) ?>" style="color:#38bdf8; text-decoration:none;"><?= htmlspecialchars($gmEmail) ?></a>)
             <?php endif; ?>
             &nbsp;|&nbsp;
             <strong>Team Overall:</strong> <?= $avgOvr ?>
-            <?php if ($isAdminUser): ?>
-                <details style="margin-top:8px;">
-                    <summary style="cursor:pointer; color:#fbbf24; font-size:0.84em; font-weight:bold;">Edit / Remove GM Info</summary>
-                    <form method="POST" style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; align-items:center;">
-                        <input type="text" name="gm_name" placeholder="GM Name" value="<?= $gmName !== 'Vacant' ? htmlspecialchars($gmName) : '' ?>"
-                               style="padding:4px 8px; border-radius:4px; border:1px solid #475569; background:#0f172a; color:#fff; font-size:0.85em;">
-                        <input type="email" name="gm_email" placeholder="GM Email" value="<?= htmlspecialchars($gmEmail) ?>"
-                               style="padding:4px 8px; border-radius:4px; border:1px solid #475569; background:#0f172a; color:#fff; font-size:0.85em;">
-                        <button type="submit" name="gm_info_action" value="update_gm"
-                                style="background:#0284c7; color:#fff; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:0.82em; font-weight:bold;">
-                            Save
-                        </button>
-                        <button type="submit" name="gm_info_action" value="remove_gm"
-                                onclick="return confirm('Remove GM and mark team Vacant?');"
-                                style="background:#dc2626; color:#fff; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:0.82em; font-weight:bold;">
-                            Remove GM
-                        </button>
-                    </form>
-                </details>
-            <?php endif; ?>
         </div>
+
+        <?php if ($isAdminUser): ?>
+            <details style="margin-top:8px;">
+                <summary style="cursor:pointer; color:#fbbf24; font-size:0.84em; font-weight:bold;">Edit / Remove GM Info</summary>
+                <form method="POST" style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; align-items:center;">
+                    <input type="text" name="gm_name" placeholder="GM Name" value="<?= $gmName !== 'Vacant' ? htmlspecialchars($gmName) : '' ?>"
+                           style="padding:4px 8px; border-radius:4px; border:1px solid #475569; background:#0f172a; color:#fff; font-size:0.85em;">
+                    <input type="email" name="gm_email" placeholder="GM Email" value="<?= htmlspecialchars($gmEmail) ?>"
+                           style="padding:4px 8px; border-radius:4px; border:1px solid #475569; background:#0f172a; color:#fff; font-size:0.85em;">
+                    <button type="submit" name="gm_info_action" value="update_gm"
+                            style="background:#0284c7; color:#fff; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:0.82em; font-weight:bold;">
+                        Save
+                    </button>
+                    <button type="submit" name="gm_info_action" value="remove_gm"
+                            onclick="return confirm('Remove GM and mark team Vacant?');"
+                            style="background:#dc2626; color:#fff; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:0.82em; font-weight:bold;">
+                        Remove GM
+                    </button>
+                </form>
+            </details>
+        <?php endif; ?>
     </div>
+</div>
 
 <?php
 $viewTeamId = (int)($teamId ?? $tid ?? $_GET['id'] ?? $_GET['team_id'] ?? 0);
