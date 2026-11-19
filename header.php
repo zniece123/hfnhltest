@@ -152,9 +152,11 @@ try {
             <a href="standings.php">Standings</a>
             <a href="schedule.php">Scores &amp; Schedule</a>
             <a href="leaders.php">Stats</a>
+            <a href="player_lookup.php">Search for player</a>
+            <a href="playoffs.php">Playoffs</a>
             <a href="draft_order.php">Draft Order</a>
             <a href="injuries.php">Injury Report</a>
-            <a href="playoffs.php">Playoffs</a>
+
         </div>
     </div>
 

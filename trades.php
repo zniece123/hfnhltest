@@ -320,6 +320,13 @@ $preOfferRet       = array();
 $preReqRet         = array();
 $preNotes          = '';
 
+if (isset($_GET['req_pid']) && (int)$_GET['req_pid'] > 0 && $counterId === 0) {
+    $preReqPlayers[] = (int)$_GET['req_pid'];
+}
+if (isset($_GET['req_prid']) && (int)$_GET['req_prid'] > 0 && $counterId === 0) {
+    $preReqProspects[] = (int)$_GET['req_prid'];
+}
+
 if ($counterId > 0 && $myTeamId > 0) {
     $cStmt = $pdo->prepare("SELECT * FROM trades WHERE trade_id = ? AND receiving_team_id = ? AND status = 'PENDING_GM'");
     $cStmt->execute(array($counterId, $myTeamId));
