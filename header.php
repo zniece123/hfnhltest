@@ -156,7 +156,7 @@ try {
             <a href="playoffs.php">Playoffs</a>
             <a href="draft_order.php">Draft Order</a>
             <a href="injuries.php">Injury Report</a>
-
+            <a href="teams_gm_info.php">GMs and Team Info</a>
         </div>
     </div>
 
