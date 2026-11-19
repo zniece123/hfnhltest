@@ -26,7 +26,8 @@ function recordSkippedPlayer(array &$details, int $limit, string $name, string $
         $candidateText[] = trim((string)($candidate['first_name'] ?? '') . ' ' . (string)($candidate['last_name'] ?? ''))
             . ' [DB ID: ' . (string)($candidate['player_id'] ?? '?')
             . ', Position: ' . (string)($candidate['position'] ?? '?')
-            . ', NHL ID: ' . (string)($candidate['nhl_player_id'] ?? 'not linked') . ']';
+            . ', nhl_id: ' . (string)($candidate['nhl_id'] ?? 'none')
+            . ', nhl_player_id: ' . (string)($candidate['nhl_player_id'] ?? 'not linked') . ']';
     }
     $details[] = [
         'name' => $name, 'nhl_id' => $externalId, 'position' => $position,
@@ -418,7 +419,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
 
                     $gp = (int)($row[$colIdx['gp'] ?? 3] ?? 0);
-                    if ($gp <= 0) continue; // No new AHL games: preserve existing ratings.
+                    if ($gp <= 0) continue;
                     $gaa = (float)($row[$colIdx['gaa'] ?? 11] ?? 3.00);
                     $sa = (float)($row[$colIdx['sa'] ?? 18] ?? 0);
                     $svs = (float)($row[$colIdx['svs'] ?? 19] ?? 0);
@@ -461,7 +462,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
 
                     $gp = (int)($row[$colIdx['gp'] ?? 4] ?? 0);
-                    if ($gp <= 0) continue; // No new AHL games: preserve existing ratings.
+                    if ($gp <= 0) continue;
                     $g = (float)($row[$colIdx['g'] ?? 5] ?? 0);
                     $a = (float)($row[$colIdx['a'] ?? 6] ?? 0);
                     $pm = (float)($row[$colIdx['+/-'] ?? 8] ?? 0);
@@ -555,7 +556,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (count($idMatches) === 1) {
                     $matches = $idMatches;
                 } elseif (count($idMatches) > 1) {
-                    $skipReason = 'Duplicate NHL player ID is linked to multiple database records';
+
+                    $idPositionCandidates = [];
+                    foreach ($idMatches as $idCandidate) {
+                        if (normalizeMpPosition((string)$idCandidate['position']) === normalizeMpPosition($position)) {
+                            $idPositionCandidates[] = $idCandidate;
+                        }
+                    }
+                    if (count($idPositionCandidates) === 1) {
+                        $matches = $idPositionCandidates;
+                    } else {
+                        $skipReason = 'Duplicate NHL player ID is present on multiple database records and position does not uniquely identify one';
+                    }
                 } elseif (count($candidates) === 1) {
                     $matches = $candidates;
                 } elseif (count($positionCandidates) === 1) {
@@ -608,7 +620,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $gp = (int)mpValue($row, $colIdx, ['games_played'], 0);
                 $ice = (float)mpValue($row, $colIdx, ['icetime'], 0);
-                if ($gp <= 0 || $ice <= 0) continue; // No season stats: preserve existing ratings.
+                if ($gp <= 0 || $ice <= 0) continue;
                 $hrs = $ice > 0 ? ($ice / 3600.0) : 0;
 
                 if ($fileType === 'goalies') {
@@ -665,7 +677,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 } else {
                     if (strtoupper($position) === 'G') continue;
-                    // Header names below match the supplied MoneyPuck export.
+
                     $goals = (float)mpValue($row, $colIdx, ['I_F_goals'], 0);
                     $a1 = (float)mpValue($row, $colIdx, ['I_F_primaryAssists'], 0);
                     $a2 = (float)mpValue($row, $colIdx, ['I_F_secondaryAssists'], 0);
@@ -760,7 +772,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $msg = "The CSV was read, but no player or prospect ratings were updated. Check that player names/positions match your database and that the file contains situation=all rows. Skipped {$skippedAmbiguous} ambiguous and {$skippedUnmatched} unmatched rows.";
         }
     }
-    } 
+    }
 }
 ?>
 <!DOCTYPE html>
