@@ -13,6 +13,10 @@ $canOffer   = ($userTeamId > 0 || $isCommish || $isFaComm);
 $msg        = '';
 $alertType  = 'info';
 
+$minSalary = 750000;
+$maxSalary = 20800000;
+$maxYears  = 4;
+
 $currentPhase = 'REGULAR_SEASON';
 $faDeadline   = '';
 try {
@@ -110,7 +114,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') ==
                 $msg       = "OFFER SHEET MATCHED! {$pName} stays with his original team ({$matchBid['offered_years']}y @ $" . number_format((int)$matchBid['offered_salary']) . ").";
                 $alertType = 'success';
             } elseif ($decision === 'decline') {
-                // Rights-holding team declines -> Player signs with offering team & picks transfer
                 $compLabel = $finalizeUnmatchedRfa($matchBid);
                 $pdo->commit();
 
@@ -122,11 +125,30 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') ==
         }
     }
 }
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') === 'remove_fa_bid' && $canOffer) {
+    $pid = (int)($_POST['player_id'] ?? 0);
+    $targetTeamId = ($isCommish || $isFaComm) && !empty($_POST['target_team_id'])
+            ? (int)$_POST['target_team_id']
+            : $userTeamId;
+
+    if ($pid > 0 && $targetTeamId > 0) {
+        $del = $pdo->prepare("DELETE FROM fa_bids WHERE player_id = ? AND team_id = ? AND status = 'ACTIVE'");
+        $del->execute(array($pid, $targetTeamId));
+
+        if ($del->rowCount() > 0) {
+            $msg       = "Sealed bid removed.";
+            $alertType = 'success';
+        } else {
+            $msg       = "No active sealed bid found for that team.";
+            $alertType = 'error';
+        }
+    }
+}
 
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') === 'place_fa_bid' && $canOffer) {
     $pid        = (int)($_POST['player_id'] ?? 0);
-    $years      = max(1, min(7, (int)($_POST['contract_years'] ?? 1)));
-    $salary     = max(750000, (int)($_POST['salary'] ?? 750000));
+    $rawYears   = (int)($_POST['contract_years'] ?? 1);
+    $rawSalary  = (int)($_POST['salary'] ?? 0);
     $destRoster = (($_POST['dest_roster'] ?? 'PRO') === 'AHL') ? 'AHL' : 'PRO';
     $offerNote  = trim($_POST['offer_reason'] ?? '');
 
@@ -134,7 +156,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') ==
             ? (int)$_POST['target_team_id']
             : $userTeamId;
 
-    if ($pid > 0 && $targetTeamId > 0) {
+    if ($rawSalary < $minSalary || $rawSalary > $maxSalary) {
+        $msg       = "Invalid bid: Salary must be between $" . number_format($minSalary) . " and $" . number_format($maxSalary) . ".";
+        $alertType = 'error';
+    } elseif ($rawYears < 1 || $rawYears > $maxYears) {
+        $msg       = "Invalid bid: Contract term must be between 1 and {$maxYears} years.";
+        $alertType = 'error';
+    } elseif ($pid > 0 && $targetTeamId > 0) {
+        $years  = $rawYears;
+        $salary = $rawSalary;
+
         $pChk = $pdo->prepare("SELECT first_name, last_name, COALESCE(fa_status, 'UFA') AS fa_status, prev_team_id FROM players WHERE player_id = ? AND UPPER(COALESCE(roster_status, '')) = 'FA'");
         $pChk->execute(array($pid));
         $targetP = $pChk->fetch(PDO::FETCH_ASSOC);
@@ -144,7 +175,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') ==
             $prevTid = (int)($targetP['prev_team_id'] ?? 0);
             $pName   = trim($targetP['first_name'] . ' ' . $targetP['last_name']);
 
-            // If external RFA Offer Sheet, verify offering team owns required original draft picks
             $compCheck = array('ok' => true, 'missing' => '');
             $compInfo  = getRfaCompensation($salary, $years);
             if ($faType === 'RFA' && $prevTid > 0 && $targetTeamId !== $prevTid) {
@@ -189,7 +219,6 @@ $pendingMatches = $pdo->query("
     ORDER BY b.match_deadline ASC
 ")->fetchAll(PDO::FETCH_ASSOC);
 
-// Filters & Pagination
 $posFilter    = strtoupper(trim($_GET['pos'] ?? 'ALL'));
 $typeFilter   = strtoupper(trim($_GET['type'] ?? 'ALL'));
 $searchFilter = trim($_GET['q'] ?? '');
@@ -278,6 +307,8 @@ function buildFaUrl($overrides = array()) {
         .badge-rfa { background: #1e3a8a; color: #93c5fd; border: 1px solid #3b82f6; padding: 2px 6px; border-radius: 4px; font-size: 0.78em; font-weight: bold; }
         .badge-mybid { background: #065f46; color: #6ee7b7; border: 1px solid #10b981; padding: 2px 6px; border-radius: 4px; font-size: 0.75em; margin-left: 5px; }
         .btn-bid { background: #0284c7; color: #fff; border: none; padding: 6px 10px; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 0.83em; }
+        .btn-remove { background: #dc2626; color: #fff; border: none; padding: 6px 9px; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 0.83em; }
+        .btn-remove:hover { background: #b91c1c; }
         .btn-match { background: #16a34a; color: #fff; border: none; padding: 6px 11px; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 0.83em; }
         .btn-decline { background: #dc2626; color: #fff; border: none; padding: 6px 11px; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 0.83em; }
         .alert { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-weight: bold; }
@@ -296,7 +327,7 @@ function buildFaUrl($overrides = array()) {
             <?php if ($isBiddingPhase): ?>
                 <strong>Sealed Bidding Open:</strong> Highest total contract value wins when signings unlock on <strong style="color:#fbbf24;"><?= date('M j, Y g:i A', $deadlineTs) ?></strong>.
             <?php else: ?>
-                Place bids below — external RFA Offer Sheets require your team's <strong>own original draft picks</strong> and trigger a <strong>7-day Match Window</strong>.
+                Place bids below (Max: <strong>$20.8M/yr</strong>, <strong>4 years</strong>) — external RFA Offer Sheets require your team's <strong>own original draft picks</strong> and trigger a <strong>7-day Match Window</strong>.
             <?php endif; ?>
         </small>
     </div>
@@ -306,6 +337,7 @@ function buildFaUrl($overrides = array()) {
 <?php if ($msg): ?>
     <div class="alert <?= htmlspecialchars($alertType) ?>"><?= htmlspecialchars($msg) ?></div>
 <?php endif; ?>
+
 <?php if (!empty($pendingMatches)): ?>
     <div class="match-card">
         <h2 style="margin-top:0; color:#a5b4fc;">⏳ RFA Offer Sheets Pending Match (7-Day Window)</h2>
@@ -364,7 +396,6 @@ function buildFaUrl($overrides = array()) {
         <button type="submit" class="filter-btn active" style="cursor:pointer;">Search</button>
     </form>
 </div>
-
 <?php if (empty($freeAgents)): ?>
     <div style="background:#1e293b; padding:24px; border-radius:8px; border:1px solid #334155; color:#94a3b8; text-align:center;">No Free Agents currently available matching your filter.</div>
 <?php else: ?>
@@ -373,7 +404,7 @@ function buildFaUrl($overrides = array()) {
             <tr>
                 <th>Player</th><th>Pos</th><th>Age</th><th>Type</th><th>Prev Team</th>
                 <th>OVR</th><th>SK</th><th>SH</th><th>PA</th><th>DF</th><th>PH</th>
-                <?php if ($canOffer): ?><th style="min-width:410px;">Place / Update Sealed Bid</th><?php endif; ?>
+                <?php if ($canOffer): ?><th style="min-width:460px;">Place / Update Sealed Bid</th><?php endif; ?>
             </tr>
             <?php foreach ($freeAgents as $fa):
                 $pid       = (int)$fa['player_id'];
@@ -381,8 +412,9 @@ function buildFaUrl($overrides = array()) {
                 $faType    = strtoupper(trim($fa['fa_status'] ?? 'UFA')) ?: 'UFA';
                 $prevAbbr  = $fa['prev_abbr'] ?: '—';
                 $myBid     = $myBidsByPlayer[$pid] ?? null;
-                $defSal    = $myBid ? (int)$myBid['offered_salary'] : max(750000, (int)($fa['salary'] ?? 750000));
-                $defYrs    = $myBid ? (int)$myBid['offered_years'] : 1;
+                $defSal    = $myBid ? min($maxSalary, (int)$myBid['offered_salary']) : min($maxSalary, max($minSalary, (int)($fa['salary'] ?? $minSalary)));
+                $defYrs    = $myBid ? min($maxYears, (int)$myBid['offered_years']) : 1;
+                $defRoster = $myBid ? ($myBid['dest_roster'] ?? 'PRO') : 'PRO';
                 $totalBids = (int)($fa['total_bids'] ?? 0);
                 ?>
                 <tr>
@@ -404,7 +436,6 @@ function buildFaUrl($overrides = array()) {
                     <?php if ($canOffer): ?>
                         <td>
                             <form method="post" style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin:0;">
-                                <input type="hidden" name="action" value="place_fa_bid">
                                 <input type="hidden" name="player_id" value="<?= $pid ?>">
                                 <?php if ($isCommish || $isFaComm): ?>
                                     <select name="target_team_id" required>
@@ -413,14 +444,20 @@ function buildFaUrl($overrides = array()) {
                                         <?php endforeach; ?>
                                     </select>
                                 <?php endif; ?>
-                                <input type="number" name="salary" value="<?= $defSal ?>" min="750000" step="50000" style="width:98px;" required>
+                                <input type="number" name="salary" value="<?= $defSal ?>" min="<?= $minSalary ?>" max="<?= $maxSalary ?>" step="50000" style="width:105px;" required>
                                 <select name="contract_years">
-                                    <?php for ($y = 1; $y <= 7; $y++): ?>
+                                    <?php for ($y = 1; $y <= $maxYears; $y++): ?>
                                         <option value="<?= $y ?>" <?= $y === $defYrs ? 'selected' : '' ?>><?= $y ?>y</option>
                                     <?php endfor; ?>
                                 </select>
-                                <select name="dest_roster"><option value="PRO">NHL</option><option value="AHL">AHL</option></select>
-                                <button type="submit" class="btn-bid"><?= $myBid ? 'Update Bid' : ($faType === 'RFA' ? 'Offer Sheet' : 'Place Bid') ?></button>
+                                <select name="dest_roster">
+                                    <option value="PRO" <?= $defRoster === 'PRO' ? 'selected' : '' ?>>NHL</option>
+                                    <option value="AHL" <?= $defRoster === 'AHL' ? 'selected' : '' ?>>AHL</option>
+                                </select>
+                                <button type="submit" name="action" value="place_fa_bid" class="btn-bid"><?= $myBid ? 'Update Bid' : ($faType === 'RFA' ? 'Offer Sheet' : 'Place Bid') ?></button>
+                                <?php if ($myBid || ($isCommish && $totalBids > 0)): ?>
+                                    <button type="submit" name="action" value="remove_fa_bid" class="btn-remove" onclick="return confirm('Remove sealed bid for <?= htmlspecialchars($fullName, ENT_QUOTES) ?>?');">Remove</button>
+                                <?php endif; ?>
                             </form>
                         </td>
                     <?php endif; ?>
@@ -444,5 +481,6 @@ function buildFaUrl($overrides = array()) {
 <?php endif; ?>
 </body>
 </html>
+
 
 
