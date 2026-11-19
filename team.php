@@ -119,9 +119,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($isTeamGM || $isAdminUser) && !emp
                     $rosterAlertType = 'info';
                     $rosterMsg       = "{$fullName} has been released from Rights Owned into Unrestricted Free Agency.";
                 }
+            } elseif ($moveAct === 'buyout_player') {
+                $yearsLeft = (int)($targetPlayer['contract_years'] ?? 0);
+                $salary    = (int)($targetPlayer['salary'] ?? 0);
+                $age       = (int)($targetPlayer['age'] ?? 26);
+
+                if ($yearsLeft <= 0 || $salary <= 0) {
+                    $rosterAlertType = 'error';
+                    $rosterMsg = "Cannot buy out {$fullName}: Player does not have an active paid contract.";
+                } else {
+                    $ratio           = ($age < 26) ? (1 / 3) : (2 / 3);
+                    $buyoutTotal     = ($salary * $yearsLeft) * $ratio;
+                    $buyoutYears     = $yearsLeft * 2;
+                    $annualBuyoutHit = (int)round($buyoutTotal / $buyoutYears);
+
+                    $pdo->prepare("
+                        UPDATE players
+                        SET team_id        = NULL,
+                            prev_team_id   = ?,
+                            roster_status  = 'FA',
+                            fa_status      = 'UFA',
+                            contract_years = 0,
+                            salary         = 0,
+                            qo_tendered    = FALSE,
+                            line_number    = 99
+                        WHERE player_id = ? AND team_id = ?
+                    ")->execute(array($team_id, $pid, $team_id));
+
+                    $pdo->prepare("
+                        INSERT INTO team_buyouts (team_id, player_id, player_name, buyout_cap_hit, years_remaining)
+                        VALUES (?, ?, ?, ?, ?)
+                    ")->execute(array($team_id, $pid, $fullName, $annualBuyoutHit, $buyoutYears));
+
+                    $rosterAlertType = 'warning';
+                    $rosterMsg = "BUYOUT COMPLETE: {$fullName} has been bought out and is now a UFA. Dead cap hit: $"
+                            . number_format($annualBuyoutHit) . "/yr for {$buyoutYears} years.";
+                }
             }
         }
     }
+
+
     $prospectId = (int)($_POST['prospect_id'] ?? 0);
     if ($prospectId > 0 && ($moveAct === 'sign_prospect_elc' || $moveAct === 'release_prospect')) {
         $prStmt = $pdo->prepare("SELECT * FROM prospects WHERE prospect_id = ? AND team_id = ?");
@@ -588,6 +626,19 @@ function renderRosterTable($rows, $isPro, $isTeamGM = false, $ahlName = 'AHL', $
                         </button>
                       </form>';
             }
+            if ((int)$p['contract_years'] > 0 && (int)$p['salary'] > 0) {
+                $bAge   = (int)($p['age'] ?? 26);
+                $bRatio = ($bAge < 26) ? (1/3) : (2/3);
+                $bYrs   = (int)$p['contract_years'] * 2;
+                $bHit   = number_format(round(((int)$p['salary'] * (int)$p['contract_years'] * $bRatio) / $bYrs));
+                $bPct   = ($bAge < 26) ? '1/3' : '2/3';
+
+                echo '<form method="POST" style="margin-top:4px;" onsubmit="return confirm(\'NHL BUYOUT (' . $bPct . ' rule): Buy out ' . $jsName . ' for $' . $bHit . '/yr over ' . $bYrs . ' years?\');">
+                        <input type="hidden" name="player_id" value="' . $pid . '">
+                        <input type="hidden" name="gm_roster_action" value="buyout_player">
+                        <button type="submit" class="btn-move" style="background:#991b1b;">Buy Out</button>
+                      </form>';
+            }
             echo '</td>';
         }
         echo '</tr>';
@@ -826,6 +877,44 @@ if ($viewTeamId > 0):
                 <td><?= htmlspecialchars($rTeamLabel) ?></td>
                 <td><strong style="color:#c084fc;">$<?= number_format($rAmt) ?></strong><?= htmlspecialchars($rPct) ?></td>
                 <td><?= $rYrs ?> yr<?= $rYrs === 1 ? '' : 's' ?></td>
+            </tr>
+        <?php endforeach; ?>
+    </table>
+<?php endif; ?>
+<?php
+$teamBuyoutsList = array();
+try {
+    $buyStmt = $pdo->prepare("
+        SELECT * FROM team_buyouts
+        WHERE team_id = ? AND years_remaining > 0
+        ORDER BY buyout_cap_hit DESC
+    ");
+    $buyStmt->execute(array($team_id));
+    $teamBuyoutsList = $buyStmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Exception $e) {
+    $teamBuyoutsList = array();
+}
+?>
+
+<h2>Buyout Dead Cap (<?= count($teamBuyoutsList) ?> Active)</h2>
+<?php if (empty($teamBuyoutsList)): ?>
+    <div style="background:#1e293b; padding:12px 16px; border-radius:8px; border:1px solid #334155; color:#94a3b8; margin-bottom:24px; font-size:0.93em;">
+        No active contract buyouts on this team's cap.
+    </div>
+<?php else: ?>
+    <table>
+        <tr>
+            <th>Player</th>
+            <th>Annual Buyout Cap Hit</th>
+            <th>Years Remaining</th>
+        </tr>
+        <?php foreach ($teamBuyoutsList as $bo):
+            $bYrs = (int)($bo['years_remaining'] ?? 0);
+            ?>
+            <tr>
+                <td><strong><?= htmlspecialchars($bo['player_name']) ?></strong></td>
+                <td><strong style="color:#f87171;">$<?= number_format((int)$bo['buyout_cap_hit']) ?></strong></td>
+                <td><?= $bYrs ?> yr<?= $bYrs === 1 ? '' : 's' ?></td>
             </tr>
         <?php endforeach; ?>
     </table>
