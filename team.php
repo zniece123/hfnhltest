@@ -469,7 +469,6 @@ $pStmt = $pdo->prepare("SELECT * FROM players WHERE team_id = ? AND COALESCE(is_
 $pStmt->execute(array($team_id));
 $allPlayers = $pStmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Fetch active salary retentions BY this team (counts against their 3 retention slots)
 $teamRetainedList = array();
 try {
     $retOutStmt = $pdo->prepare("
@@ -493,7 +492,6 @@ try {
 }
 $retentionSlotsUsed = count($teamRetainedList);
 
-// Fetch any retentions ON players currently on this team's roster (retained by former teams)
 $playerRetentionsMap = array();
 try {
     $retInStmt = $pdo->prepare("
