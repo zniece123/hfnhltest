@@ -38,6 +38,49 @@ function getLeagueCapLimits(PDO $pdo): array {
     );
 }
 
+function getTeamRetainedCap(PDO $pdo, int $teamId): int {
+    try {
+        $stmt = $pdo->prepare("
+            SELECT COALESCE(SUM(retained_cap_hit), 0)
+            FROM retained_salaries
+            WHERE retaining_team_id = ? AND years_remaining > 0
+        ");
+        $stmt->execute(array($teamId));
+        return (int)$stmt->fetchColumn();
+    } catch (Exception $e) {
+        return 0;
+    }
+}
+
+function validateSalaryRetention(PDO $pdo, int $retainingTeamId, int $playerId, float $percent, int $newRetainedAmount): string {
+    if ($percent <= 0 || $percent > 50) {
+        return "Retention percentage must be between 1% and 50%.";
+    }
+
+    $slotStmt = $pdo->prepare("SELECT COUNT(*) FROM retained_salaries WHERE retaining_team_id = ? AND years_remaining > 0");
+    $slotStmt->execute(array($retainingTeamId));
+    if ((int)$slotStmt->fetchColumn() >= 3) {
+        return "Team already has the maximum of 3 active retained salary contracts.";
+    }
+
+    $playerStmt = $pdo->prepare("SELECT COUNT(*) FROM retained_salaries WHERE player_id = ? AND years_remaining > 0");
+    $playerStmt->execute(array($playerId));
+    if ((int)$playerStmt->fetchColumn() >= 2) {
+        return "This player's contract has already been retained twice (NHL maximum).";
+    }
+
+    $limits       = getLeagueCapLimits($pdo);
+    $maxRetained  = (int)round($limits['max'] * 0.15);
+    $currRetained = getTeamRetainedCap($pdo, $retainingTeamId);
+
+    if (($currRetained + $newRetainedAmount) > $maxRetained) {
+        $limitFmt = '$' . number_format($maxRetained);
+        return "Adding this retention exceeds the 15% league cap retention limit ({$limitFmt}).";
+    }
+
+    return '';
+}
+
 function advanceLeagueCapForOffseason(PDO $pdo, bool $isSubsequentSeason): array {
     $currYear   = (int)($pdo->query("SELECT setting_value FROM league_settings WHERE setting_key = 'current_season'")->fetchColumn() ?: 2026);
     $targetYear = $isSubsequentSeason ? ($currYear + 1) : $currYear;
@@ -73,6 +116,11 @@ function advanceLeagueCapForOffseason(PDO $pdo, bool $isSubsequentSeason): array
     $upsertSetting->execute(array('salary_cap_max', (string)$row['cap_max']));
     $upsertSetting->execute(array('salary_cap_min', (string)$row['cap_min']));
 
+    try {
+        $pdo->exec("UPDATE retained_salaries SET years_remaining = years_remaining - 1");
+        $pdo->exec("DELETE FROM retained_salaries WHERE years_remaining <= 0");
+    } catch (Exception $e) {}
+
     return array(
         'season_year'  => $targetYear,
         'season_label' => $row['season_label'],
@@ -94,19 +142,24 @@ function getTeamCapSummary(PDO $pdo, int $teamId): array {
     $stmt->execute(array($teamId));
     $proCapHit = (int)$stmt->fetchColumn();
 
-    $capSpace   = $limits['max'] - $proCapHit;
-    $underFloor = max(0, $limits['min'] - $proCapHit);
+    $retainedCap = getTeamRetainedCap($pdo, $teamId);
+    $totalCapHit = $proCapHit + $retainedCap;
+
+    $capSpace   = $limits['max'] - $totalCapHit;
+    $underFloor = max(0, $limits['min'] - $totalCapHit);
 
     return array(
         'season_label'    => $limits['season_label'],
         'cap_max'         => $limits['max'],
         'cap_min'         => $limits['min'],
-        'cap_hit'         => $proCapHit,
+        'pro_cap_hit'     => $proCapHit,
+        'retained_cap'    => $retainedCap,
+        'cap_hit'         => $totalCapHit,
         'cap_space'       => $capSpace,
         'available_space' => $capSpace,
         'under_floor'     => $underFloor,
-        'is_over_cap'     => ($proCapHit > $limits['max']),
-        'is_below_floor'  => ($proCapHit < $limits['min']),
+        'is_over_cap'     => ($totalCapHit > $limits['max']),
+        'is_below_floor'  => ($totalCapHit < $limits['min']),
     );
 }
 
@@ -118,13 +171,24 @@ function getLeagueCapViolations(PDO $pdo): array {
         SELECT t.team_id,
                t.abbreviation,
                t.name AS team_name,
-               COALESCE(SUM(CASE WHEN UPPER(COALESCE(p.roster_status, 'PRO')) = 'PRO' AND COALESCE(p.is_retired, FALSE) = FALSE THEN p.salary ELSE 0 END), 0) AS cap_hit,
+               COALESCE(p_cap.pro_hit, 0) + COALESCE(r_cap.ret_hit, 0) AS cap_hit,
                u.email AS gm_email,
                u.username AS gm_name
         FROM teams t
-        LEFT JOIN players p ON p.team_id = t.team_id
+        LEFT JOIN (
+            SELECT team_id, SUM(salary) AS pro_hit
+            FROM players
+            WHERE UPPER(COALESCE(roster_status, 'PRO')) = 'PRO'
+              AND COALESCE(is_retired, FALSE) = FALSE
+            GROUP BY team_id
+        ) p_cap ON p_cap.team_id = t.team_id
+        LEFT JOIN (
+            SELECT retaining_team_id, SUM(retained_cap_hit) AS ret_hit
+            FROM retained_salaries
+            WHERE years_remaining > 0
+            GROUP BY retaining_team_id
+        ) r_cap ON r_cap.retaining_team_id = t.team_id
         LEFT JOIN users u ON u.team_id = t.team_id
-        GROUP BY t.team_id, t.abbreviation, t.name, u.email, u.username
         ORDER BY t.name ASC
     ";
 

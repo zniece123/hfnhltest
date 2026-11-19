@@ -1,6 +1,7 @@
 <?php
 require 'db.php';
 require 'mailer.php';
+require_once 'cap_helper.php';
 /** @var PDO $pdo */
 
 if (!isset($_SESSION['user_id'])) {
@@ -18,17 +19,65 @@ $msg              = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'propose') {
     $recTeamId      = (int)($_POST['receiving_team_id'] ?? 0);
-    $counterTradeId = (int)($_POST['counter_trade_id'] ?? 0);
+    $counterTradeId = (int)$_POST['counter_trade_id'] ?? 0;
     $offerIds       = array_map('intval', $_POST['offer_pids'] ?? array());
     $reqIds         = array_map('intval', $_POST['req_pids'] ?? array());
     $offerPickIds   = array_map('intval', $_POST['offer_pick_ids'] ?? array());
     $reqPickIds     = array_map('intval', $_POST['req_pick_ids'] ?? array());
     $notes          = trim($_POST['trade_notes'] ?? '');
 
+    $rawOfferRet = $_POST['offer_ret'] ?? array();
+    $rawReqRet   = $_POST['req_ret'] ?? array();
+    $offerRetMap = array();
+    $reqRetMap   = array();
+    $retError    = '';
+
+    $chkSalStmt = $pdo->prepare("SELECT salary, UPPER(COALESCE(roster_status, 'PRO')) AS st FROM players WHERE player_id = ?");
+
+    foreach ($offerIds as $pid) {
+        $pct = isset($rawOfferRet[$pid]) ? (float)$rawOfferRet[$pid] : 0;
+        if ($pct > 0) {
+            $chkSalStmt->execute(array($pid));
+            $pRow = $chkSalStmt->fetch(PDO::FETCH_ASSOC);
+            $sal  = (int)($pRow['salary'] ?? 0);
+            $st   = $pRow['st'] ?? 'PRO';
+            if ($sal <= 0 || in_array($st, array('PROSPECT', 'UNSIGNED', 'RIGHTS'))) {
+                $retError = "Cannot retain salary on unsigned prospects or rights.";
+                break;
+            }
+            $retAmt = (int)round($sal * ($pct / 100));
+            $err = validateSalaryRetention($pdo, $myTeamId, $pid, $pct, $retAmt);
+            if ($err !== '') { $retError = $err; break; }
+            $offerRetMap[$pid] = $pct;
+        }
+    }
+
+    if ($retError === '') {
+        foreach ($reqIds as $pid) {
+            $pct = isset($rawReqRet[$pid]) ? (float)$rawReqRet[$pid] : 0;
+            if ($pct > 0) {
+                $chkSalStmt->execute(array($pid));
+                $pRow = $chkSalStmt->fetch(PDO::FETCH_ASSOC);
+                $sal  = (int)($pRow['salary'] ?? 0);
+                $st   = $pRow['st'] ?? 'PRO';
+                if ($sal <= 0 || in_array($st, array('PROSPECT', 'UNSIGNED', 'RIGHTS'))) {
+                    $retError = "Cannot retain salary on unsigned prospects or rights.";
+                    break;
+                }
+                $retAmt = (int)round($sal * ($pct / 100));
+                $err = validateSalaryRetention($pdo, $recTeamId, $pid, $pct, $retAmt);
+                if ($err !== '') { $retError = $err; break; }
+                $reqRetMap[$pid] = $pct;
+            }
+        }
+    }
+
     $hasOffer = !empty($offerIds) || !empty($offerPickIds);
     $hasReq   = !empty($reqIds) || !empty($reqPickIds);
 
-    if ($recTeamId > 0 && $recTeamId !== $myTeamId && ($hasOffer || $hasReq)) {
+    if ($retError !== '') {
+        $msg = "Retention Error: " . $retError;
+    } elseif ($recTeamId > 0 && $recTeamId !== $myTeamId && ($hasOffer || $hasReq)) {
         $pdo->beginTransaction();
 
         if ($counterTradeId > 0) {
@@ -48,14 +97,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'propo
                 proposing_team_id, receiving_team_id,
                 offered_player_ids, requested_player_ids,
                 offered_pick_ids, requested_pick_ids,
+                offered_retentions, requested_retentions,
                 trade_notes, status, parent_trade_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING_GM', ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_GM', ?)
         ");
         $stmt->execute(array(
                 $myTeamId, $recTeamId,
                 $pgOffer, $pgReq,
                 $pgOfferPicks, $pgReqPicks,
+                json_encode((object)$offerRetMap),
+                json_encode((object)$reqRetMap),
                 $notes, $counterTradeId > 0 ? $counterTradeId : null
         ));
 
@@ -71,7 +123,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'propo
         $msg = $counterTradeId > 0 ? "Counter-offer sent!" : "Trade offer sent!";
     }
 }
-
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['action'] ?? '', array('accept_gm', 'decline_gm', 'cancel_gm'))) {
     $tid = (int)$_POST['trade_id'];
     $act = $_POST['action'];
@@ -81,7 +132,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['action'] ?? '', ar
                 ->execute(array($tid, $myTeamId));
 
         $tcEmails   = $pdo->query("SELECT email FROM users WHERE (is_trade_committee = TRUE OR is_commish = TRUE OR is_admin = TRUE) AND email <> ''")->fetchAll(PDO::FETCH_COLUMN);
-        $tcEmails[] = 'yourleaguetrade@email.com'; // <-- Replace with your official league trade email address
+        $tcEmails[] = 'yourleaguetrade@email.com';
 
         sendLeagueEmail(
                 $tcEmails,
@@ -114,35 +165,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isTradeCommittee && ($_POST['actio
 
     if ($tRow) {
         $pdo->beginTransaction();
-        $propId     = (int)$tRow['proposing_team_id'];
-        $recId      = (int)$tRow['receiving_team_id'];
-        $offArr     = array_filter(explode(',', trim($tRow['offered_player_ids'], '{}')));
-        $reqArr     = array_filter(explode(',', trim($tRow['requested_player_ids'], '{}')));
-        $offPickArr = array_filter(explode(',', trim($tRow['offered_pick_ids'] ?? '{}', '{}')));
-        $reqPickArr = array_filter(explode(',', trim($tRow['requested_pick_ids'] ?? '{}', '{}')));
+        try {
+            $propId      = (int)$tRow['proposing_team_id'];
+            $recId       = (int)$tRow['receiving_team_id'];
+            $offArr      = array_filter(explode(',', trim($tRow['offered_player_ids'], '{}')));
+            $reqArr      = array_filter(explode(',', trim($tRow['requested_player_ids'], '{}')));
+            $offPickArr  = array_filter(explode(',', trim($tRow['offered_pick_ids'] ?? '{}', '{}')));
+            $reqPickArr  = array_filter(explode(',', trim($tRow['requested_pick_ids'] ?? '{}', '{}')));
+            $offRetMap   = json_decode($tRow['offered_retentions'] ?? '{}', true) ?: array();
+            $reqRetMap   = json_decode($tRow['requested_retentions'] ?? '{}', true) ?: array();
 
-        $moveCmd     = $pdo->prepare("UPDATE players SET team_id = ?, line_number = 99 WHERE player_id = ?");
-        $delBlock    = $pdo->prepare("DELETE FROM trade_block WHERE player_id = ?");
-        $movePickCmd = $pdo->prepare("UPDATE draft_picks SET current_team_id = ? WHERE pick_id = ?");
+            $moveCmd     = $pdo->prepare("UPDATE players SET team_id = ?, line_number = 99 WHERE player_id = ?");
+            $delBlock    = $pdo->prepare("DELETE FROM trade_block WHERE player_id = ?");
+            $movePickCmd = $pdo->prepare("UPDATE draft_picks SET current_team_id = ? WHERE pick_id = ?");
+            $getPlayer   = $pdo->prepare("SELECT salary, COALESCE(contract_years, 1) AS yrs FROM players WHERE player_id = ?");
+            $updSalary   = $pdo->prepare("UPDATE players SET salary = ? WHERE player_id = ?");
+            $insRet      = $pdo->prepare("
+                INSERT INTO retained_salaries (player_id, retaining_team_id, retained_percent, retained_cap_hit, years_remaining)
+                VALUES (?, ?, ?, ?, ?)
+            ");
 
-        foreach ($offArr as $pid) {
-            $moveCmd->execute(array($recId, (int)$pid));
-            $delBlock->execute(array((int)$pid));
-        }
-        foreach ($reqArr as $pid) {
-            $moveCmd->execute(array($propId, (int)$pid));
-            $delBlock->execute(array((int)$pid));
-        }
-        foreach ($offPickArr as $pickId) {
-            $movePickCmd->execute(array($recId, (int)$pickId));
-        }
-        foreach ($reqPickArr as $pickId) {
-            $movePickCmd->execute(array($propId, (int)$pickId));
-        }
+            foreach ($offArr as $pidRaw) {
+                $pid = (int)$pidRaw;
+                $pct = isset($offRetMap[$pid]) ? (float)$offRetMap[$pid] : 0;
+                if ($pct > 0) {
+                    $getPlayer->execute(array($pid));
+                    $pInfo  = $getPlayer->fetch(PDO::FETCH_ASSOC);
+                    $retAmt = (int)round($pInfo['salary'] * ($pct / 100));
+                    $err    = validateSalaryRetention($pdo, $propId, $pid, $pct, $retAmt);
+                    if ($err !== '') throw new Exception($err);
+                    $insRet->execute(array($pid, $propId, $pct, $retAmt, max(1, (int)$pInfo['yrs'])));
+                    $updSalary->execute(array($pInfo['salary'] - $retAmt, $pid));
+                }
+                $moveCmd->execute(array($recId, $pid));
+                $delBlock->execute(array($pid));
+            }
 
-        $pdo->prepare("UPDATE trades SET status = 'APPROVED', updated_at = NOW() WHERE trade_id = ?")->execute(array($tid));
-        $pdo->commit();
-        $msg = "Trade #{$tid} approved and rosters/picks updated automatically for the sim!";
+            foreach ($reqArr as $pidRaw) {
+                $pid = (int)$pidRaw;
+                $pct = isset($reqRetMap[$pid]) ? (float)$reqRetMap[$pid] : 0;
+                if ($pct > 0) {
+                    $getPlayer->execute(array($pid));
+                    $pInfo  = $getPlayer->fetch(PDO::FETCH_ASSOC);
+                    $retAmt = (int)round($pInfo['salary'] * ($pct / 100));
+                    $err    = validateSalaryRetention($pdo, $recId, $pid, $pct, $retAmt);
+                    if ($err !== '') throw new Exception($err);
+                    $insRet->execute(array($pid, $recId, $pct, $retAmt, max(1, (int)$pInfo['yrs'])));
+                    $updSalary->execute(array($pInfo['salary'] - $retAmt, $pid));
+                }
+                $moveCmd->execute(array($propId, $pid));
+                $delBlock->execute(array($pid));
+            }
+
+            foreach ($offPickArr as $pickId) {
+                $movePickCmd->execute(array($recId, (int)$pickId));
+            }
+            foreach ($reqPickArr as $pickId) {
+                $movePickCmd->execute(array($propId, (int)$pickId));
+            }
+
+            $pdo->prepare("UPDATE trades SET status = 'APPROVED', updated_at = NOW() WHERE trade_id = ?")->execute(array($tid));
+            $pdo->commit();
+            $msg = "Trade #{$tid} approved and rosters/picks/retentions updated automatically!";
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $msg = "Cannot approve trade: " . $e->getMessage();
+        }
     }
 } elseif ($_SERVER['REQUEST_METHOD'] === 'POST' && $isTradeCommittee && ($_POST['action'] ?? '') === 'veto_commish') {
     $tid = (int)$_POST['trade_id'];
@@ -157,8 +245,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isTradeCommittee && ($_POST['actio
 }
 
 $playerMap = array();
-foreach ($pdo->query("SELECT player_id, first_name, last_name, position, overall_rating FROM players") as $p) {
-    $playerMap[$p['player_id']] = "{$p['first_name']} {$p['last_name']} ({$p['position']} {$p['overall_rating']})";
+foreach ($pdo->query("SELECT player_id, first_name, last_name, position, overall_rating, salary, UPPER(COALESCE(roster_status, 'PRO')) AS st FROM players") as $p) {
+    $sal = (int)$p['salary'];
+    if ($sal <= 0 || in_array($p['st'], array('PROSPECT', 'UNSIGNED', 'RIGHTS'))) {
+        $playerMap[$p['player_id']] = "{$p['first_name']} {$p['last_name']} ({$p['position']} {$p['overall_rating']} - [Prospect / Rights])";
+    } else {
+        $salM = number_format($sal / 1000000, 2);
+        $playerMap[$p['player_id']] = "{$p['first_name']} {$p['last_name']} ({$p['position']} {$p['overall_rating']} - \${$salM}M)";
+    }
 }
 
 $pickMap = array();
@@ -172,21 +266,30 @@ foreach ($pdo->query($pickSql) as $pk) {
     $pickMap[$pk['pick_id']] = "{$pk['draft_year']} Rd {$pk['round_num']} ({$pk['orig_team']}){$cond}";
 }
 
-function formatAssetList($pgPlayerArr, $pgPickArr, $playerMap, $pickMap) {
-    $out = array();
+function formatAssetList($pgPlayerArr, $pgPickArr, $playerMap, $pickMap, $retJson = '{}') {
+    $out    = array();
+    $retMap = json_decode($retJson ?? '{}', true) ?: array();
+
     foreach (array_filter(explode(',', trim($pgPlayerArr ?? '{}', '{}'))) as $id) {
-        $out[] = htmlspecialchars($playerMap[(int)$id] ?? "Player #{$id}");
+        $pid   = (int)$id;
+        $label = htmlspecialchars($playerMap[$pid] ?? "Player #{$pid}");
+        if (!empty($retMap[$pid]) && (float)$retMap[$pid] > 0) {
+            $pct    = rtrim(rtrim(number_format((float)$retMap[$pid], 2), '0'), '.');
+            $label .= ' <span style="color:#fbbf24;font-weight:bold;">[Retained ' . $pct . '%]</span>';
+        }
+        $out[] = $label;
     }
     foreach (array_filter(explode(',', trim($pgPickArr ?? '{}', '{}'))) as $id) {
         $out[] = '<strong>[Pick]</strong> ' . htmlspecialchars($pickMap[(int)$id] ?? "Pick #{$id}");
     }
     return empty($out) ? '<em>None</em>' : implode('<br>', $out);
 }
-
 $preOfferPlayers = array();
 $preReqPlayers   = array();
 $preOfferPicks   = array();
 $preReqPicks     = array();
+$preOfferRet     = array();
+$preReqRet       = array();
 $preNotes        = '';
 
 if ($counterId > 0 && $myTeamId > 0) {
@@ -200,15 +303,17 @@ if ($counterId > 0 && $myTeamId > 0) {
         $preReqPlayers   = array_map('intval', array_filter(explode(',', trim($cTrade['offered_player_ids'], '{}'))));
         $preOfferPicks   = array_map('intval', array_filter(explode(',', trim($cTrade['requested_pick_ids'] ?? '{}', '{}'))));
         $preReqPicks     = array_map('intval', array_filter(explode(',', trim($cTrade['offered_pick_ids'] ?? '{}', '{}'))));
+        $preOfferRet     = json_decode($cTrade['requested_retentions'] ?? '{}', true) ?: array();
+        $preReqRet       = json_decode($cTrade['offered_retentions'] ?? '{}', true) ?: array();
         $preNotes        = "Counter to Trade #{$counterId}: " . $cTrade['trade_notes'];
     } else {
         $counterId = 0;
     }
 }
 
-$allTeams = $pdo->query("SELECT team_id, name FROM teams ORDER BY name")->fetchAll();
-$myRoster = $myTeamId > 0 ? $pdo->query("SELECT player_id, first_name, last_name, position, overall_rating FROM players WHERE team_id = {$myTeamId} ORDER BY overall_rating DESC")->fetchAll() : array();
-$partnerRoster = $partnerId > 0 ? $pdo->query("SELECT player_id, first_name, last_name, position, overall_rating FROM players WHERE team_id = {$partnerId} ORDER BY overall_rating DESC")->fetchAll() : array();
+$allTeams      = $pdo->query("SELECT team_id, name FROM teams ORDER BY name")->fetchAll();
+$myRoster      = $myTeamId > 0 ? $pdo->query("SELECT player_id, first_name, last_name, position, overall_rating, salary, UPPER(COALESCE(roster_status, 'PRO')) AS st FROM players WHERE team_id = {$myTeamId} AND COALESCE(is_retired, FALSE) = FALSE ORDER BY overall_rating DESC")->fetchAll() : array();
+$partnerRoster = $partnerId > 0 ? $pdo->query("SELECT player_id, first_name, last_name, position, overall_rating, salary, UPPER(COALESCE(roster_status, 'PRO')) AS st FROM players WHERE team_id = {$partnerId} AND COALESCE(is_retired, FALSE) = FALSE ORDER BY overall_rating DESC")->fetchAll() : array();
 
 $myPicks = $myTeamId > 0 ? $pdo->query("
     SELECT dp.pick_id, dp.draft_year, dp.round_num, dp.conditions, t.name AS orig_team
@@ -256,8 +361,11 @@ $trades = $tradeStmt->fetchAll();
         .card { background: #1e293b; padding: 20px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 24px; }
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         select, textarea { width: 100%; padding: 8px; border-radius: 5px; border: 1px solid #475569; background: #0f172a; color: #fff; box-sizing: border-box; }
-        .roster-box { max-height: 240px; overflow-y: auto; background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155; }
-        .roster-box label { display: block; padding: 5px 4px; border-bottom: 1px solid #1e293b; cursor: pointer; }
+        .roster-box { max-height: 280px; overflow-y: auto; background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155; }
+        .roster-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 4px; border-bottom: 1px solid #1e293b; gap: 8px; }
+        .roster-row label { cursor: pointer; flex: 1; font-size: 13px; }
+        .ret-select { width: 105px; padding: 4px; font-size: 12px; }
+        .badge-rights { color: #a78bfa; font-weight: bold; font-size: 11px; }
         table { width: 100%; border-collapse: collapse; background: #1e293b; margin-top: 10px; }
         th, td { padding: 10px; text-align: left; border-bottom: 1px solid #334155; vertical-align: top; }
         th { background: #020617; color: #38bdf8; }
@@ -275,93 +383,138 @@ $trades = $tradeStmt->fetchAll();
 <?php if ($msg): ?><div class="alert"><?= htmlspecialchars($msg) ?></div><?php endif; ?>
 
 <?php if ($myTeamId > 0): ?>
-    <div class="card">
-        <h2 style="margin-top:0;"><?= $counterId > 0 ? "Counter-Offer for Trade #{$counterId}" : "Propose a Trade" ?></h2>
-        <form method="get" style="margin-bottom:16px;">
-            <label><strong>Select Trade Partner:</strong></label>
-            <select name="partner" onchange="this.form.submit()" style="max-width:350px;margin-top:6px;">
-                <option value="0">-- Choose Team --</option>
-                <?php foreach ($allTeams as $t): if ((int)$t['team_id'] === $myTeamId) continue; ?>
-                    <option value="<?= $t['team_id'] ?>" <?= $partnerId == $t['team_id'] ? 'selected' : '' ?>><?= htmlspecialchars($t['name']) ?></option>
-                <?php endforeach; ?>
-            </select>
-        </form>
+<div class="card">
+    <h2 style="margin-top:0;"><?= $counterId > 0 ? "Counter-Offer for Trade #{$counterId}" : "Propose a Trade" ?></h2>
+    <form method="get" style="margin-bottom:16px;">
+        <label><strong>Select Trade Partner:</strong></label>
+        <select name="partner" onchange="this.form.submit()" style="max-width:350px;margin-top:6px;">
+            <option value="0">-- Choose Team --</option>
+            <?php foreach ($allTeams as $t): if ((int)$t['team_id'] === $myTeamId) continue; ?>
+                <option value="<?= $t['team_id'] ?>" <?= $partnerId == $t['team_id'] ? 'selected' : '' ?>><?= htmlspecialchars($t['name']) ?></option>
+            <?php endforeach; ?>
+        </select>
+    </form>
 
-        <?php if ($partnerId > 0): ?>
-            <form method="post">
-                <input type="hidden" name="action" value="propose">
-                <input type="hidden" name="receiving_team_id" value="<?= $partnerId ?>">
-                <input type="hidden" name="counter_trade_id" value="<?= $counterId ?>">
+    <?php if ($partnerId > 0): ?>
+    <form method="post">
+        <input type="hidden" name="action" value="propose">
+        <input type="hidden" name="receiving_team_id" value="<?= $partnerId ?>">
+        <input type="hidden" name="counter_trade_id" value="<?= $counterId ?>">
 
-                <div class="grid-2">
-                    <div>
-                        <h3>You Send (Players):</h3>
-                        <div class="roster-box">
-                            <?php foreach ($myRoster as $p): ?>
-                                <label>
-                                    <input type="checkbox" name="offer_pids[]" value="<?= $p['player_id'] ?>"
-                                            <?= in_array((int)$p['player_id'], $preOfferPlayers) ? 'checked' : '' ?>>
-                                    <?= htmlspecialchars("{$p['first_name']} {$p['last_name']} ({$p['position']} - {$p['overall_rating']} OVR)") ?>
-                                </label>
-                            <?php endforeach; ?>
-                        </div>
-
-                        <h4>You Send (Draft Picks):</h4>
-                        <div class="roster-box" style="max-height:160px;">
-                            <?php if (empty($myPicks)): ?>
-                                <em style="color:#94a3b8;">No available draft picks.</em>
+        <div class="grid-2">
+            <div>
+                <h3>You Send (Players &amp; Rights):</h3>
+                <div class="roster-box">
+                    <?php foreach ($myRoster as $p):
+                        $pid      = (int)$p['player_id'];
+                        $sal      = (int)$p['salary'];
+                        $isRights = ($sal <= 0 || in_array($p['st'], array('PROSPECT', 'UNSIGNED', 'RIGHTS')));
+                        $salM     = number_format($sal / 1000000, 2);
+                        $selRet   = (float)($preOfferRet[$pid] ?? 0);
+                        ?>
+                        <div class="roster-row">
+                            <label>
+                                <input type="checkbox" name="offer_pids[]" value="<?= $pid ?>"
+                                        <?= in_array($pid, $preOfferPlayers) ? 'checked' : '' ?>>
+                                <?= htmlspecialchars("{$p['first_name']} {$p['last_name']} ({$p['position']} {$p['overall_rating']})") ?>
+                                <?php if ($isRights): ?>
+                                    <span class="badge-rights">[Prospect / Rights]</span>
+                                <?php else: ?>
+                                    <span style="color:#94a3b8;">- $<?= $salM ?>M</span>
+                                <?php endif; ?>
+                            </label>
+                            <?php if (!$isRights): ?>
+                                <select name="offer_ret[<?= $pid ?>]" class="ret-select" title="Salary Retained %">
+                                    <option value="0">0% Ret.</option>
+                                    <?php foreach (array(10, 15, 20, 25, 30, 35, 40, 45, 50) as $pct): ?>
+                                        <option value="<?= $pct ?>" <?= $selRet == $pct ? 'selected' : '' ?>><?= $pct ?>% Ret.</option>
+                                    <?php endforeach; ?>
+                                </select>
                             <?php endif; ?>
-                            <?php foreach ($myPicks as $pk): ?>
-                                <label>
-                                    <input type="checkbox" name="offer_pick_ids[]" value="<?= $pk['pick_id'] ?>"
-                                            <?= in_array((int)$pk['pick_id'], $preOfferPicks) ? 'checked' : '' ?>>
-                                    <?= htmlspecialchars("{$pk['draft_year']} Rd {$pk['round_num']} ({$pk['orig_team']})" . (!empty($pk['conditions']) ? " [{$pk['conditions']}]" : "")) ?>
-                                </label>
-                            <?php endforeach; ?>
                         </div>
-                    </div>
-
-                    <div>
-                        <h3>You Receive (Players):</h3>
-                        <div class="roster-box">
-                            <?php foreach ($partnerRoster as $p): ?>
-                                <label>
-                                    <input type="checkbox" name="req_pids[]" value="<?= $p['player_id'] ?>"
-                                            <?= in_array((int)$p['player_id'], $preReqPlayers) ? 'checked' : '' ?>>
-                                    <?= htmlspecialchars("{$p['first_name']} {$p['last_name']} ({$p['position']} - {$p['overall_rating']} OVR)") ?>
-                                </label>
-                            <?php endforeach; ?>
-                        </div>
-
-                        <h4>You Receive (Draft Picks):</h4>
-                        <div class="roster-box" style="max-height:160px;">
-                            <?php if (empty($partnerPicks)): ?>
-                                <em style="color:#94a3b8;">No available draft picks.</em>
-                            <?php endif; ?>
-                            <?php foreach ($partnerPicks as $pk): ?>
-                                <label>
-                                    <input type="checkbox" name="req_pick_ids[]" value="<?= $pk['pick_id'] ?>"
-                                            <?= in_array((int)$pk['pick_id'], $preReqPicks) ? 'checked' : '' ?>>
-                                    <?= htmlspecialchars("{$pk['draft_year']} Rd {$pk['round_num']} ({$pk['orig_team']})" . (!empty($pk['conditions']) ? " [{$pk['conditions']}]" : "")) ?>
-                                </label>
-                            <?php endforeach; ?>
-                        </div>
-                    </div>
+                    <?php endforeach; ?>
                 </div>
 
-                <div style="margin-top:14px;">
-                    <label><strong>Trade Notes / Conditions:</strong></label>
-                    <textarea name="trade_notes" rows="2" placeholder="Optional message or pick conditions..."><?= htmlspecialchars($preNotes) ?></textarea>
+                <h4>You Send (Draft Picks):</h4>
+                <div class="roster-box" style="max-height:160px;">
+                    <?php if (empty($myPicks)): ?>
+                        <em style="color:#94a3b8;">No available draft picks.</em>
+                    <?php endif; ?>
+                    <?php foreach ($myPicks as $pk): ?>
+                    <div class="roster-row">
+                        <label>
+                            <input type="checkbox" name="offer_pick_ids[]" value="<?= $pk['pick_id'] ?>"
+                                    <?= in_array((int)$pk['pick_id'], $preOfferPicks) ? 'checked' : '' ?>>
+                            <?= htmlspecialchars("{$pk['draft_year']} Rd {$pk['round_num']} ({$pk['orig_team']})" . (!empty($pk['conditions']) ? " [{$pk['conditions']}]" : "")) ?>
+                        </label>
+                    </div>
+                    <?php endforeach; ?>
                 </div>
-                <button type="submit" class="btn" style="margin-top:14px;">
-                    <?= $counterId > 0 ? "Send Counter-Offer" : "Submit Trade Offer" ?>
-                </button>
-                <?php if ($counterId > 0): ?>
-                    <a href="trades.php" class="btn btn-red" style="margin-top:14px;margin-left:8px;">Cancel Counter</a>
-                <?php endif; ?>
-            </form>
+            </div>
+
+            <div>
+                <h3>You Receive (Players &amp; Rights):</h3>
+                <div class="roster-box">
+                    <?php foreach ($partnerRoster as $p):
+                        $pid      = (int)$p['player_id'];
+                        $sal      = (int)$p['salary'];
+                        $isRights = ($sal <= 0 || in_array($p['st'], array('PROSPECT', 'UNSIGNED', 'RIGHTS')));
+                        $salM     = number_format($sal / 1000000, 2);
+                        $selRet   = (float)($preReqRet[$pid] ?? 0);
+                        ?>
+                        <div class="roster-row">
+                            <label>
+                                <input type="checkbox" name="req_pids[]" value="<?= $pid ?>"
+                                        <?= in_array($pid, $preReqPlayers) ? 'checked' : '' ?>>
+                                <?= htmlspecialchars("{$p['first_name']} {$p['last_name']} ({$p['position']} {$p['overall_rating']})") ?>
+                                <?php if ($isRights): ?>
+                                    <span class="badge-rights">[Prospect / Rights]</span>
+                                <?php else: ?>
+                                    <span style="color:#94a3b8;">- $<?= $salM ?>M</span>
+                                <?php endif; ?>
+                            </label>
+                            <?php if (!$isRights): ?>
+                                <select name="req_ret[<?= $pid ?>]" class="ret-select" title="Salary Retained %">
+                                    <option value="0">0% Ret.</option>
+                                    <?php foreach (array(10, 15, 20, 25, 30, 35, 40, 45, 50) as $pct): ?>
+                                        <option value="<?= $pct ?>" <?= $selRet == $pct ? 'selected' : '' ?>><?= $pct ?>% Ret.</option>
+                                    <?php endforeach; ?>
+                                </select>
+                            <?php endif; ?>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+
+                <h4>You Receive (Draft Picks):</h4>
+                <div class="roster-box" style="max-height:160px;">
+                    <?php if (empty($partnerPicks)): ?>
+                        <em style="color:#94a3b8;">No available draft picks.</em>
+                    <?php endif; ?>
+                    <?php foreach ($partnerPicks as $pk): ?>
+                        <div class="roster-row">
+                            <label>
+                                <input type="checkbox" name="req_pick_ids[]" value="<?= $pk['pick_id'] ?>"
+                                        <?= in_array((int)$pk['pick_id'], $preReqPicks) ? 'checked' : '' ?>>
+                                <?= htmlspecialchars("{$pk['draft_year']} Rd {$pk['round_num']} ({$pk['orig_team']})" . (!empty($pk['conditions']) ? " [{$pk['conditions']}]" : "")) ?>
+                            </label>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+        </div>
+        <div style="margin-top:14px;">
+            <label><strong>Trade Notes / Conditions:</strong></label>
+            <textarea name="trade_notes" rows="2" placeholder="Optional message or pick conditions..."><?= htmlspecialchars($preNotes) ?></textarea>
+        </div>
+        <button type="submit" class="btn" style="margin-top:14px;">
+            <?= $counterId > 0 ? "Send Counter-Offer" : "Submit Trade Offer" ?>
+        </button>
+        <?php if ($counterId > 0): ?>
+            <a href="trades.php" class="btn btn-red" style="margin-top:14px;margin-left:8px;">Cancel Counter</a>
         <?php endif; ?>
-    </div>
+    </form>
+    <?php endif; ?>
+</div>
 <?php endif; ?>
 
 <h2>Active &amp; Completed League Trades</h2>
@@ -382,9 +535,9 @@ $trades = $tradeStmt->fetchAll();
                 <?= !empty($tr['parent_trade_id']) ? '<br><small style="color:#94a3b8;">(Counter to #' . (int)$tr['parent_trade_id'] . ')</small>' : '' ?>
             </td>
             <td><strong><?= htmlspecialchars($tr['prop_name']) ?></strong></td>
-            <td><?= formatAssetList($tr['offered_player_ids'], $tr['offered_pick_ids'] ?? '{}', $playerMap, $pickMap) ?></td>
+            <td><?= formatAssetList($tr['offered_player_ids'], $tr['offered_pick_ids'] ?? '{}', $playerMap, $pickMap, $tr['offered_retentions'] ?? '{}') ?></td>
             <td><strong><?= htmlspecialchars($tr['rec_name']) ?></strong></td>
-            <td><?= formatAssetList($tr['requested_player_ids'], $tr['requested_pick_ids'] ?? '{}', $playerMap, $pickMap) ?></td>
+            <td><?= formatAssetList($tr['requested_player_ids'], $tr['requested_pick_ids'] ?? '{}', $playerMap, $pickMap, $tr['requested_retentions'] ?? '{}') ?></td>
             <td>
                 <strong>Status:</strong> <?= htmlspecialchars($tr['status']) ?><br>
                 <?= $tr['trade_notes'] ? '<em style="color:#94a3b8;">' . htmlspecialchars($tr['trade_notes']) . '</em>' : '' ?>
@@ -415,6 +568,8 @@ $trades = $tradeStmt->fetchAll();
 </table>
 </body>
 </html>
+
+
 
 
 
