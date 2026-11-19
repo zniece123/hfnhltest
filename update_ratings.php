@@ -32,6 +32,22 @@ function cleanMpName(string $name): string {
     return preg_replace('/[^a-z0-9]/', '', strtolower(strtr($name, $map)));
 }
 
+function normalizeMpHeader(string $header): string {
+    $header = preg_replace('/^\xEF\xBB\xBF/', '', $header); // UTF-8 BOM
+    $header = trim($header, " \t\n\r\0\x0B\"'");
+    return strtolower($header);
+}
+
+function mpValue(array $row, array $colIdx, array $aliases, $default = 0) {
+    foreach ($aliases as $alias) {
+        $key = normalizeMpHeader((string)$alias);
+        if (array_key_exists($key, $colIdx)) {
+            return $row[$colIdx[$key]] ?? $default;
+        }
+    }
+    return $default;
+}
+
 function clampRating(float $val, int $min = 52, int $max = 98): int {
     return max($min, min($max, (int)round($val)));
 }
@@ -66,9 +82,24 @@ function findUniqueNamePositionMatch(array $nameMap, string $key, string $positi
     return count($matches) === 1 ? $matches : [];
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES['mp_csv']['tmp_name'])) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $fileType = $_POST['mp_type'] ?? 'skaters';
-    $fh = fopen($_FILES['mp_csv']['tmp_name'], 'r');
+    $uploadError = $_FILES['mp_csv']['error'] ?? UPLOAD_ERR_NO_FILE;
+
+    if ($uploadError !== UPLOAD_ERR_OK) {
+        $msgType = 'error';
+        $uploadMessages = [
+            UPLOAD_ERR_INI_SIZE => 'The CSV exceeds the server upload_max_filesize limit.',
+            UPLOAD_ERR_FORM_SIZE => 'The CSV exceeds the form upload size limit.',
+            UPLOAD_ERR_PARTIAL => 'The CSV upload was interrupted; please try again.',
+            UPLOAD_ERR_NO_FILE => 'No CSV file was received. Please choose the skaters.csv file.',
+            UPLOAD_ERR_NO_TMP_DIR => 'The server is missing its temporary upload folder.',
+            UPLOAD_ERR_CANT_WRITE => 'The server could not save the uploaded CSV.',
+            UPLOAD_ERR_EXTENSION => 'A server extension stopped the CSV upload.'
+        ];
+        $msg = $uploadMessages[$uploadError] ?? ('Upload failed with error code ' . $uploadError . '.');
+    } else {
+        $fh = fopen($_FILES['mp_csv']['tmp_name'], 'r');
 
     if (!$fh) {
         $msgType = 'error';
@@ -233,22 +264,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES['mp_csv']['tmp_name'
             $headers = fgetcsv($fh);
             $colIdx = [];
             if ($headers) {
-                foreach ($headers as $i => $h) $colIdx[strtolower(trim((string)$h))] = $i;
+                foreach ($headers as $i => $h) $colIdx[normalizeMpHeader((string)$h)] = $i;
             }
 
-            while (($row = fgetcsv($fh)) !== false) {
-                if (isset($colIdx['situation'])) {
-                    $sit = strtolower(trim((string)($row[$colIdx['situation']] ?? '')));
-                    if ($sit !== '' && $sit !== 'all') continue;
-                }
+            if (!$headers || !isset($colIdx['playerid'], $colIdx['name'], $colIdx['position'], $colIdx['situation'], $colIdx['games_played'], $colIdx['icetime'])) {
+                $msgType = 'error';
+                $msg = 'This does not look like the expected MoneyPuck skaters.csv: required headers playerId, name, position, situation, games_played, and icetime were not all found.';
+            }
 
-                $rawName = trim((string)($row[$colIdx['name'] ?? -1] ?? ''));
+            while ($msgType !== 'error' && ($row = fgetcsv($fh)) !== false) {
+                $sit = strtolower(trim((string)mpValue($row, $colIdx, ['situation'], '')));
+                if ($sit !== 'all') continue;
+
+                $rawName = trim((string)mpValue($row, $colIdx, ['name'], ''));
                 if ($rawName === '') continue;
                 $key = cleanMpName($rawName);
-                $externalId = trim((string)($row[$colIdx['playerid'] ?? -1] ?? ''));
-                $position = strtoupper(trim((string)($row[$colIdx['position'] ?? -1] ?? '')));
+                $externalId = trim((string)mpValue($row, $colIdx, ['playerId', 'playerid'], ''));
+                $position = strtoupper(trim((string)mpValue($row, $colIdx, ['position'], '')));
 
                 $matches = ($externalId !== '') ? findByNhlId($allP, $externalId) : [];
+                if (count($matches) > 1) $matches = []; // duplicate external IDs are unsafe
                 if (!$matches && $position !== '') {
                     $matches = findUniqueNamePositionMatch($nameMap, $key, $position);
                     if (count($matches) === 1 && $externalId !== '') {
@@ -263,8 +298,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES['mp_csv']['tmp_name'
                     continue;
                 }
 
-                $gp = (int)($row[$colIdx['games_played'] ?? -1] ?? 0);
-                $ice = (float)($row[$colIdx['icetime'] ?? -1] ?? 0);
+                $gp = (int)mpValue($row, $colIdx, ['games_played'], 0);
+                $ice = (float)mpValue($row, $colIdx, ['icetime'], 0);
                 $hrs = $ice > 0 ? ($ice / 3600.0) : 0;
 
                 if ($fileType === 'goalies') {
@@ -302,14 +337,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES['mp_csv']['tmp_name'
                     }
                 } else {
                     if (strtoupper($position) === 'G') continue;
-                    $goals = (float)($row[$colIdx['i_f_goals'] ?? -1] ?? 0);
-                    $a1 = (float)($row[$colIdx['i_f_primaryassists'] ?? -1] ?? 0);
-                    $a2 = (float)($row[$colIdx['i_f_secondaryassists'] ?? -1] ?? 0);
-                    $sog = (float)($row[$colIdx['i_f_shotsongoal'] ?? -1] ?? 0);
-                    $hits = (float)($row[$colIdx['i_f_hits'] ?? -1] ?? 0);
-                    $blocks = (float)($row[$colIdx['shotsblockedbyplayer'] ?? -1] ?? 0);
-                    $onXga = (float)($row[$colIdx['onice_a_xgoals'] ?? -1] ?? 0);
-                    $onXgf = (float)($row[$colIdx['onice_f_xgoals'] ?? -1] ?? 0);
+                    // Header names below match the supplied MoneyPuck export.
+                    $goals = (float)mpValue($row, $colIdx, ['I_F_goals'], 0);
+                    $a1 = (float)mpValue($row, $colIdx, ['I_F_primaryAssists'], 0);
+                    $a2 = (float)mpValue($row, $colIdx, ['I_F_secondaryAssists'], 0);
+                    $sog = (float)mpValue($row, $colIdx, ['I_F_shotsOnGoal', 'I_F_xOnGoal'], 0);
+                    $hits = (float)mpValue($row, $colIdx, ['I_F_hits'], 0);
+                    $blocks = (float)mpValue($row, $colIdx, ['I_F_blockedShotAttempts'], 0);
+                    $individualXg = (float)mpValue($row, $colIdx, ['I_F_xGoals'], 0);
+                    $onIceXgPct = (float)mpValue($row, $colIdx, ['onIce_xGoalsPercentage'], 0.50);
+                    $onXga = 0.0;
+                    $onXgf = 0.0;
 
                     $priorHrs = 6.0;
                     $effHrs = $hrs + $priorHrs;
@@ -318,13 +356,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES['mp_csv']['tmp_name'
                     $sog60 = ($sog + ($priorHrs * 6.5)) / $effHrs;
                     $hit60 = ($hits + ($priorHrs * 4.5)) / $effHrs;
                     $blk60 = ($blocks + ($priorHrs * 2.2)) / $effHrs;
-                    $xga60 = ($onXga + ($priorHrs * 2.65)) / $effHrs;
-                    $xgPct = ($onXgf + $onXga + 20.0) > 0
-                        ? (($onXgf + 10.0) / ($onXgf + $onXga + 20.0)) : 0.50;
+                    $xga60 = 2.65; // no on-ice xGA total is present in this CSV
+                    $xgPct = max(0.0, min(1.0, $onIceXgPct));
                     $toiPerGame = $gp > 0 ? ($ice / 60.0) / $gp : 0;
                     $usageBonus = max(-1.5, min(4.0, ($toiPerGame - 13.5) * 0.48));
 
-                    $sh = clampRating(63 + ($g60 * 16.5) + ($sog60 * 1.1) + $usageBonus);
+                    $xg60 = ($individualXg + ($priorHrs * 0.45)) / $effHrs;
+                    $sh = clampRating(63 + ($g60 * 16.5) + ($sog60 * 1.1) + ($xg60 * 2.0) + $usageBonus);
                     $pa = clampRating(63 + ($a60 * 14.0) + (($xgPct - 0.50) * 45) + $usageBonus);
                     $sk = clampRating(67 + (($xgPct - 0.50) * 65) + ($sog60 * 0.8) + ($usageBonus * 0.8));
                     $df = clampRating(65 + ((2.75 - $xga60) * 14.0) + ($blk60 * 1.6) + ($usageBonus * 0.8));
@@ -358,8 +396,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_FILES['mp_csv']['tmp_name'
 
         fclose($fh);
         $msgType = 'info';
-        $msg = "Ratings update complete. Updated {$updated} player profiles. "
-             . "Skipped {$skippedAmbiguous} ambiguous matches and {$skippedUnmatched} unmatched rows.";
+        if ($updated > 0) {
+            $msg = "Ratings update complete. Updated {$updated} player profiles. "
+                 . "Skipped {$skippedAmbiguous} ambiguous matches and {$skippedUnmatched} unmatched rows.";
+        } elseif ($msgType !== 'error') {
+            $msgType = 'error';
+            $msg = "The CSV was read, but no player profiles were updated. Check that player names/positions match your database and that the file contains situation=all rows. Skipped {$skippedAmbiguous} ambiguous and {$skippedUnmatched} unmatched rows.";
+        }
+    }
     }
 }
 ?>
